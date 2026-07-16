@@ -53,46 +53,61 @@ def extract_api_key(
     x_api_key: str | None = None,
     authorization: str | None = None,
 ) -> str | None:
-    if x_api_key and x_api_key.strip():
-        return x_api_key.strip()
+    from app.config import Settings
+
+    if x_api_key:
+        cleaned = Settings.clean_secret(x_api_key)
+        if cleaned:
+            return cleaned
     if authorization:
         auth = authorization.strip()
         if auth.lower().startswith("bearer "):
-            return auth[7:].strip()
-        return auth
+            cleaned = Settings.clean_secret(auth[7:])
+            if cleaned:
+                return cleaned
+        cleaned = Settings.clean_secret(auth)
+        if cleaned:
+            return cleaned
     return None
 
 
 def _env_principal(raw_key: str) -> Principal | None:
+    """Match raw key against API_KEY_ADMIN / BOOTSTRAP_ADMIN_KEY / API_KEYS_JSON."""
+    from app.config import Settings
+
+    cleaned = Settings.clean_secret(raw_key)
+    if not cleaned:
+        return None
     for item in settings.parse_api_keys():
-        if item["key"] == raw_key:
-            role = item["role"]
-            if role == "admin":
-                return Principal(
-                    key_name=item["name"],
-                    role="platform_admin",
-                    key_id=raw_key[-4:] if len(raw_key) >= 4 else "****",
-                    tenant_id=None,
-                    namespace=settings.pinecone_namespace or "default",
-                    scopes=frozenset(
-                        {
-                            "platform:admin",
-                            "query:read",
-                            "ingest:write",
-                            "docs:read",
-                        }
-                    ),
-                    openrouter_model=settings.openrouter_model,
-                )
+        if item["key"] != cleaned:
+            continue
+        role = (item.get("role") or "user").lower()
+        if role in {"admin", "platform_admin"}:
             return Principal(
                 key_name=item["name"],
-                role="tenant",
-                key_id=raw_key[-4:] if len(raw_key) >= 4 else "****",
+                role="platform_admin",
+                key_id=cleaned[-4:] if len(cleaned) >= 4 else "****",
                 tenant_id=None,
                 namespace=settings.pinecone_namespace or "default",
-                scopes=frozenset({"query:read", "docs:read"}),
+                scopes=frozenset(
+                    {
+                        "platform:admin",
+                        "query:read",
+                        "ingest:write",
+                        "docs:read",
+                    }
+                ),
                 openrouter_model=settings.openrouter_model,
             )
+        return Principal(
+            key_name=item["name"],
+            role="tenant",
+            key_id=cleaned[-4:] if len(cleaned) >= 4 else "****",
+            tenant_id=None,
+            namespace=settings.pinecone_namespace or "default",
+            scopes=frozenset({"query:read", "docs:read"}),
+            openrouter_model=settings.openrouter_model,
+        )
     return None
 
 
@@ -171,19 +186,25 @@ def authenticate_request(
             detail="Missing API key. Send X-API-Key or Authorization: Bearer <key>",
         )
 
-    principal = None
-    if db is not None:
+    # Env bootstrap first so a newly set API_KEY_ADMIN always works even if an
+    # old/disabled DB hash collides or DB is briefly unavailable.
+    principal = _env_principal(raw)
+    if principal is None and db is not None:
         try:
             principal = _db_principal(db, raw)
         except Exception:  # noqa: BLE001
             principal = None
     if principal is None:
-        principal = _env_principal(raw)
-    if principal is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid API key",
+            detail=(
+                "Invalid API key. Use the platform admin key from env "
+                "(API_KEY_ADMIN or BOOTSTRAP_ADMIN_KEY) or a DB-issued platform key."
+            ),
         )
+    if not principal.is_platform_admin and "platform:admin" not in principal.scopes:
+        # Tenant keys must not call admin routes; require_scopes enforces this.
+        pass
     return principal
 
 

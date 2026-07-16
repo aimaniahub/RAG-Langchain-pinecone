@@ -79,8 +79,25 @@ def _doc_dict(d) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════════
-# SETUP / DASHBOARD (guidance)
+# AUTH VERIFY + SETUP / DASHBOARD
 # ═══════════════════════════════════════════════════════════════════
+
+
+@router.get("/admin/auth/verify")
+def verify_admin_key(
+    principal: Principal = Depends(require_platform_admin()),
+) -> dict:
+    """Validate the platform admin key (for Admin UI Connect)."""
+    return {
+        "ok": True,
+        "auth_enabled": settings.auth_enabled,
+        "key_name": principal.key_name,
+        "role": principal.role,
+        "key_id": principal.key_id,
+        "scopes": sorted(principal.scopes),
+        "is_platform_admin": principal.is_platform_admin,
+        "message": "Platform admin key accepted.",
+    }
 
 
 @router.get("/admin/setup")

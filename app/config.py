@@ -187,34 +187,49 @@ class Settings(BaseSettings):
             return ["*"]
         return [o.strip() for o in raw.split(",") if o.strip()]
 
+    @staticmethod
+    def clean_secret(value: str | None) -> str:
+        """Strip whitespace and optional surrounding quotes from secrets."""
+        s = (value or "").strip()
+        if len(s) >= 2 and s[0] == s[-1] and s[0] in {'"', "'"}:
+            s = s[1:-1].strip()
+        return s
+
     def parse_api_keys(self) -> list[dict[str, str]]:
+        """Build env bootstrap key list (admin + optional user / JSON keys)."""
         keys: list[dict[str, str]] = []
-        if self.api_keys_json.strip():
+        raw_json = self.clean_secret(self.api_keys_json)
+        if raw_json:
             try:
-                data: Any = json.loads(self.api_keys_json)
+                data: Any = json.loads(raw_json)
                 items = data if isinstance(data, list) else data.get("keys", [])
                 for item in items:
                     if not isinstance(item, dict):
                         continue
-                    k = str(item.get("key") or "").strip()
+                    k = self.clean_secret(str(item.get("key") or ""))
                     if not k:
                         continue
+                    role = str(item.get("role") or "user").strip().lower()
+                    # Treat platform_admin / admin the same for env keys
+                    if role in {"platform_admin", "platform-admin", "superadmin"}:
+                        role = "admin"
                     keys.append(
                         {
                             "key": k,
-                            "role": str(item.get("role") or "user").lower(),
-                            "name": str(item.get("name") or "client"),
+                            "role": role,
+                            "name": str(item.get("name") or "client").strip() or "client",
                         }
                     )
             except json.JSONDecodeError:
                 pass
-        admin = self.bootstrap_admin_key.strip() or self.api_key_admin.strip()
+        admin = self.clean_secret(self.bootstrap_admin_key) or self.clean_secret(
+            self.api_key_admin
+        )
         if admin:
             keys.append({"key": admin, "role": "admin", "name": "admin"})
-        if self.api_key_user.strip():
-            keys.append(
-                {"key": self.api_key_user.strip(), "role": "user", "name": "user"}
-            )
+        user = self.clean_secret(self.api_key_user)
+        if user:
+            keys.append({"key": user, "role": "user", "name": "user"})
         seen: set[str] = set()
         unique: list[dict[str, str]] = []
         for item in keys:

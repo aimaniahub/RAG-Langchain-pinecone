@@ -1,17 +1,19 @@
 (() => {
   const $ = (id) => document.getElementById(id);
   const api = "/api/v1";
+  const STORAGE_KEY = "rag_admin_key";
+
   const titles = {
     home: ["Home", "Setup checklist — live from Postgres"],
     companies: ["Companies", "Client companies (tenants). Configure keys, docs, models per company."],
     test: ["Test API", "Pick a company and chat with a real tenant API key"],
-    users: ["Users", "Operators stored in the database"],
     system: ["System", "Integrations and platform model defaults"],
   };
 
   const state = {
+    adminKey: "",
+    connected: false,
     tenants: [],
-    users: [],
     setup: null,
     config: null,
     selectedId: null,
@@ -21,14 +23,41 @@
     testMessages: [],
   };
 
-  const keyEl = $("apiKey");
-  keyEl.value = localStorage.getItem("rag_admin_key") || "dev-admin-key";
-  keyEl.onchange = () => localStorage.setItem("rag_admin_key", keyEl.value.trim());
+  // ── helpers ──
+  function esc(s) {
+    return String(s ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;");
+  }
+
+  function cleanKey(v) {
+    let s = String(v ?? "").trim();
+    if (s.length >= 2 && ((s[0] === '"' && s[s.length - 1] === '"') || (s[0] === "'" && s[s.length - 1] === "'"))) {
+      s = s.slice(1, -1).trim();
+    }
+    return s;
+  }
+
+  function formatError(detail, statusText) {
+    if (detail == null || detail === "") return statusText || "Request failed";
+    if (typeof detail === "string") return detail;
+    if (Array.isArray(detail)) {
+      return detail
+        .map((x) => (typeof x === "string" ? x : x.msg || JSON.stringify(x)))
+        .join("; ");
+    }
+    if (typeof detail === "object") {
+      if (detail.message) return detail.message;
+      return JSON.stringify(detail);
+    }
+    return String(detail);
+  }
 
   function headers(json = true) {
     const h = {};
     if (json) h["Content-Type"] = "application/json";
-    const k = keyEl.value.trim();
+    const k = cleanKey(state.adminKey);
     if (k) h["X-API-Key"] = k;
     return h;
   }
@@ -37,34 +66,9 @@
     const r = await fetch(api + path, opts);
     const d = await r.json().catch(() => ({}));
     if (!r.ok) {
-      const msg = d.detail || d.message || r.statusText;
-      throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+      throw new Error(formatError(d.detail || d.message, r.statusText));
     }
     return d;
-  }
-
-  function esc(s) {
-    return String(s ?? "")
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;");
-  }
-
-  function toast(msg, ok = true) {
-    const el = $("toast");
-    el.className = "toast " + (ok ? "ok" : "err");
-    el.textContent = msg;
-    el.classList.remove("hidden");
-    setTimeout(() => el.classList.add("hidden"), 3200);
-  }
-
-  async function copyText(label, value) {
-    try {
-      await navigator.clipboard.writeText(value);
-      toast(`Copied ${label}`);
-    } catch {
-      toast("Copy failed — select text manually", false);
-    }
   }
 
   function baseUrl() {
@@ -75,6 +79,228 @@
   function apiPrefix() {
     return state.config?.api_prefix || state.setup?.api_prefix || "/api/v1";
   }
+
+  // ── Dialogs ──
+  let dlgResolve = null;
+
+  function closeDialog(result) {
+    $("modalDialog").classList.add("hidden");
+    const r = dlgResolve;
+    dlgResolve = null;
+    if (r) r(result);
+  }
+
+  /**
+   * @param {{title:string, message:string, ok?:boolean, secret?:string, confirm?:boolean, confirmLabel?:string, cancelLabel?:string}} opts
+   * @returns {Promise<boolean>}
+   */
+  function showDialog(opts) {
+    const ok = opts.ok !== false;
+    $("dlgIcon").className = "dlg-icon " + (ok ? "ok" : "err");
+    $("dlgIcon").textContent = ok ? "✓" : "!";
+    $("dlgTitle").textContent = opts.title || (ok ? "Success" : "Error");
+    $("dlgMessage").textContent = opts.message || "";
+    const sec = $("dlgSecret");
+    if (opts.secret) {
+      sec.classList.remove("hidden");
+      sec.innerHTML = `<strong>Copy now (shown once)</strong><br/>${esc(opts.secret)}
+        <br/><button type="button" class="btn sm" style="margin-top:8px" id="dlgCopy">Copy</button>`;
+      const btn = $("dlgCopy");
+      if (btn) {
+        btn.onclick = async () => {
+          try {
+            await navigator.clipboard.writeText(opts.secret);
+            btn.textContent = "Copied";
+          } catch {
+            btn.textContent = "Select text manually";
+          }
+        };
+      }
+    } else {
+      sec.classList.add("hidden");
+      sec.innerHTML = "";
+    }
+    const actions = $("dlgActions");
+    if (opts.confirm) {
+      actions.innerHTML = `
+        <button type="button" class="btn" id="dlgCancel">${esc(opts.cancelLabel || "Cancel")}</button>
+        <button type="button" class="btn ${ok ? "primary" : "danger"}" id="dlgOk">${esc(
+          opts.confirmLabel || "Confirm"
+        )}</button>`;
+      $("dlgCancel").onclick = () => closeDialog(false);
+      $("dlgOk").onclick = () => closeDialog(true);
+    } else {
+      actions.innerHTML = `<button type="button" class="btn primary" id="dlgOk">${esc(
+        opts.confirmLabel || "OK"
+      )}</button>`;
+      $("dlgOk").onclick = () => closeDialog(true);
+    }
+    $("modalDialog").classList.remove("hidden");
+    return new Promise((resolve) => {
+      dlgResolve = resolve;
+    });
+  }
+
+  async function notifySuccess(title, message, secret) {
+    await showDialog({ title, message, ok: true, secret });
+  }
+
+  async function notifyError(title, message) {
+    await showDialog({ title: title || "Error", message: message || "Something went wrong", ok: false });
+  }
+
+  async function confirmAction(title, message, confirmLabel) {
+    return showDialog({
+      title,
+      message,
+      ok: false,
+      confirm: true,
+      confirmLabel: confirmLabel || "Confirm",
+      cancelLabel: "Cancel",
+    });
+  }
+
+  async function copyText(label, value) {
+    try {
+      await navigator.clipboard.writeText(value);
+      await notifySuccess("Copied", `${label} copied to clipboard.`);
+    } catch {
+      await notifyError("Copy failed", "Select the text and copy manually.");
+    }
+  }
+
+  // ── Auth gate ──
+  function setConnectedUI(connected) {
+    state.connected = connected;
+    $("authGate").classList.toggle("hidden", connected);
+    $("appShell").classList.toggle("hidden", !connected);
+    if (connected) {
+      const k = state.adminKey;
+      $("authKeyHint").textContent = k
+        ? `${k.slice(0, 6)}…${k.slice(-4)}`
+        : "(auth disabled / no key)";
+    }
+  }
+
+  function showGateError(msg) {
+    const el = $("gateError");
+    if (!msg) {
+      el.classList.add("hidden");
+      el.textContent = "";
+      return;
+    }
+    el.textContent = msg;
+    el.classList.remove("hidden");
+  }
+
+  function validateKeyInput(raw) {
+    const k = cleanKey(raw);
+    if (!k) {
+      return { ok: false, error: "Admin key is required. Paste API_KEY_ADMIN from your server env." };
+    }
+    if (k.length < 4) {
+      return { ok: false, error: "Key looks too short. Check you pasted the full value." };
+    }
+    if (/\s/.test(k)) {
+      return { ok: false, error: "Key must not contain spaces. Remove quotes/spaces from .env." };
+    }
+    return { ok: true, key: k };
+  }
+
+  async function connectWithKey(raw, { silent = false } = {}) {
+    const v = validateKeyInput(raw);
+    // When AUTH is off, empty key is allowed
+    let key = v.ok ? v.key : cleanKey(raw);
+    if (!v.ok && key) {
+      showGateError(v.error);
+      if (!silent) await notifyError("Invalid key", v.error);
+      return false;
+    }
+
+    state.adminKey = key;
+    try {
+      // First try verify; if AUTH disabled, empty key works via anonymous principal
+      const me = await req("/admin/auth/verify", { headers: headers(false) });
+      if (!me.ok && !me.is_platform_admin) {
+        throw new Error("Key accepted but not platform admin.");
+      }
+      localStorage.setItem(STORAGE_KEY, key);
+      setConnectedUI(true);
+      showGateError("");
+      await refresh();
+      if (!silent) {
+        await notifySuccess(
+          "Connected",
+          me.auth_enabled === false
+            ? "Auth is disabled on the server (AUTH_ENABLED=false). You have full admin access."
+            : `Admin key accepted (${me.key_name || "admin"} · role ${me.role}).`
+        );
+      }
+      return true;
+    } catch (e) {
+      state.connected = false;
+      localStorage.removeItem(STORAGE_KEY);
+      const msg =
+        e.message ||
+        "Auth failed. Check API_KEY_ADMIN / BOOTSTRAP_ADMIN_KEY, restart server after env change.";
+      showGateError(msg);
+      setConnectedUI(false);
+      if (!silent) await notifyError("Authentication failed", msg);
+      return false;
+    }
+  }
+
+  $("gateToggle").onclick = () => {
+    const inp = $("gateKey");
+    const show = inp.type === "password";
+    inp.type = show ? "text" : "password";
+    $("gateToggle").textContent = show ? "Hide" : "Show";
+  };
+
+  $("gateConnect").onclick = async () => {
+    const raw = $("gateKey").value;
+    const v = validateKeyInput(raw);
+    // Allow empty only if server has auth off — try anyway with empty
+    if (!v.ok && cleanKey(raw)) {
+      showGateError(v.error);
+      return;
+    }
+    $("gateConnect").disabled = true;
+    $("gateConnect").textContent = "Connecting…";
+    try {
+      await connectWithKey(raw, { silent: false });
+    } finally {
+      $("gateConnect").disabled = false;
+      $("gateConnect").textContent = "Connect";
+    }
+  };
+
+  $("gateKey").addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") {
+      ev.preventDefault();
+      $("gateConnect").click();
+    }
+  });
+
+  $("gateKey").addEventListener("input", () => {
+    showGateError("");
+    const v = validateKeyInput($("gateKey").value);
+    if ($("gateKey").value && !v.ok) {
+      // soft validation while typing — only if non-empty and clearly bad
+      if (cleanKey($("gateKey").value).length >= 1 && /\s/.test(cleanKey($("gateKey").value))) {
+        showGateError(v.error);
+      }
+    }
+  });
+
+  $("btnDisconnect").onclick = () => {
+    state.adminKey = "";
+    state.connected = false;
+    localStorage.removeItem(STORAGE_KEY);
+    $("gateKey").value = "";
+    setConnectedUI(false);
+    showGateError("");
+  };
 
   // ── nav ──
   document.querySelectorAll(".nav-item").forEach((btn) => {
@@ -93,20 +319,18 @@
 
   // ── loaders ──
   async function refresh() {
+    if (!state.connected && !state.adminKey) return;
     try {
-      const [dash, conf, tenants, users] = await Promise.all([
+      const [dash, conf, tenants] = await Promise.all([
         req("/admin/dashboard", { headers: headers(false) }),
         req("/admin/system/config", { headers: headers(false) }),
         req("/admin/tenants", { headers: headers(false) }),
-        req("/admin/users", { headers: headers(false) }),
       ]);
       state.setup = dash.setup;
       state.config = conf;
       state.tenants = tenants.items || [];
-      state.users = users.items || [];
       renderHome();
       renderCompanies();
-      renderUsers();
       renderSystem();
       renderTestCompanySelect();
       if (state.selectedId) await openDesk(state.selectedId, false);
@@ -116,10 +340,16 @@
       $("statusPill").textContent = ok ? "core ready" : "setup needed";
     } catch (e) {
       $("statusPill").className = "pill err";
-      $("statusPill").textContent = "auth / server error";
-      $("nextBox").textContent =
-        "Cannot reach admin API. Check platform admin key and server. " + e.message;
-      toast(e.message, false);
+      $("statusPill").textContent = "error";
+      const msg = e.message || "Failed to load admin data";
+      if (/invalid api key|missing api key|missing scopes|unauthorized|forbidden/i.test(msg)) {
+        setConnectedUI(false);
+        showGateError(msg);
+        await notifyError("Session expired", msg + "\n\nRe-enter your platform admin key.");
+      } else {
+        $("nextBox").textContent = "Cannot load dashboard: " + msg;
+        await notifyError("Load failed", msg);
+      }
     }
   }
 
@@ -144,7 +374,6 @@
       ["Active keys", counts.tenant_keys_active ?? 0],
       ["Docs ready", counts.documents_ready ?? 0],
       ["Queries", counts.queries ?? 0],
-      ["Users", counts.users ?? 0],
       ["All docs", counts.documents ?? 0],
     ]
       .map(
@@ -219,7 +448,7 @@
       $("deskSub").textContent = `${d.tenant.status} · ${d.tenant.slug} · ${d.tenant.id}`;
       renderDesk();
     } catch (e) {
-      toast(e.message, false);
+      await notifyError("Could not open company", e.message);
     }
   }
 
@@ -228,12 +457,12 @@
     if (!d) return;
     const tab = state.deskTab;
     document.querySelectorAll(".desk-pane").forEach((p) => p.classList.remove("active"));
-    $("tab-" + tab).classList.add("active");
+    const pane = $("tab-" + tab);
+    if (pane) pane.classList.add("active");
     if (tab === "overview") renderDeskOverview();
     if (tab === "keys") renderDeskKeys();
     if (tab === "docs") renderDeskDocs();
     if (tab === "models") renderDeskModels();
-    if (tab === "members") renderDeskMembers();
     if (tab === "usage") renderDeskUsage();
   }
 
@@ -315,19 +544,26 @@
     `;
     bindCopy(el);
     $("btnToggleStatus").onclick = async () => {
+      const next = t.status === "active" ? "disabled" : "active";
+      const ok = await confirmAction(
+        next === "disabled" ? "Disable company?" : "Enable company?",
+        next === "disabled"
+          ? `${t.name} will stop accepting API calls with its keys.`
+          : `${t.name} will accept API calls again.`,
+        next === "disabled" ? "Disable" : "Enable"
+      );
+      if (!ok) return;
       try {
         await req(`/admin/tenants/${t.id}`, {
           method: "PATCH",
           headers: headers(true),
-          body: JSON.stringify({
-            status: t.status === "active" ? "disabled" : "active",
-          }),
+          body: JSON.stringify({ status: next }),
         });
-        toast("Company status updated");
+        await notifySuccess("Status updated", `${t.name} is now ${next}.`);
         await refresh();
         await openDesk(t.id);
       } catch (e) {
-        toast(e.message, false);
+        await notifyError("Update failed", e.message);
       }
     };
     $("btnDeskTest").onclick = () => {
@@ -384,36 +620,41 @@
         });
         state.testKeys[t.id] = d.api_key;
         sessionStorage.setItem("rag_test_keys", JSON.stringify(state.testKeys));
-        const box = $("deskKeySecret");
-        box.classList.remove("hidden");
-        box.innerHTML = `<strong>COPY KEY NOW (once)</strong><br/>${esc(d.api_key)}
-          <br/><button type="button" class="btn sm" style="margin-top:8px" id="copyNewKey">Copy key</button>`;
-        $("copyNewKey").onclick = () => copyText("API key", d.api_key);
-        toast("Key issued");
+        await notifySuccess("API key issued", "Copy the key now. It will not be shown again.", d.api_key);
         await openDesk(t.id);
       } catch (e) {
-        toast(e.message, false);
+        await notifyError("Issue key failed", e.message);
       }
     };
     el.querySelectorAll("[data-rev]").forEach((b) => {
       b.onclick = async () => {
-        if (!confirm("Revoke this key?")) return;
+        const ok = await confirmAction(
+          "Revoke key?",
+          "This key will stop working immediately for client API calls.",
+          "Revoke"
+        );
+        if (!ok) return;
         try {
           await req(`/admin/keys/${b.dataset.rev}/revoke`, {
             method: "POST",
             headers: headers(false),
           });
-          toast("Key revoked");
+          await notifySuccess("Key revoked", "The key is no longer active.");
           await openDesk(t.id);
           refresh();
         } catch (e) {
-          toast(e.message, false);
+          await notifyError("Revoke failed", e.message);
         }
       };
     });
     el.querySelectorAll("[data-rot]").forEach((b) => {
       b.onclick = async () => {
-        if (!confirm("Rotate key? Old key stops working.")) return;
+        const ok = await confirmAction(
+          "Rotate key?",
+          "The old key stops working. You will get a new secret to copy once.",
+          "Rotate"
+        );
+        if (!ok) return;
         try {
           const d = await req(`/admin/keys/${b.dataset.rot}/rotate`, {
             method: "POST",
@@ -421,13 +662,10 @@
           });
           state.testKeys[t.id] = d.api_key;
           sessionStorage.setItem("rag_test_keys", JSON.stringify(state.testKeys));
-          const box = $("deskKeySecret");
-          box.classList.remove("hidden");
-          box.innerHTML = `<strong>NEW KEY (copy once)</strong><br/>${esc(d.api_key)}`;
-          toast("Key rotated");
+          await notifySuccess("Key rotated", "Copy the new key now. Old key is dead.", d.api_key);
           await openDesk(t.id);
         } catch (e) {
-          toast(e.message, false);
+          await notifyError("Rotate failed", e.message);
         }
       };
     });
@@ -472,7 +710,10 @@
       </div>`;
     $("deskUpload").onclick = async () => {
       const f = $("deskFile").files?.[0];
-      if (!f) return toast("Choose a file", false);
+      if (!f) {
+        await notifyError("No file", "Choose a PDF, Markdown, or text file first.");
+        return;
+      }
       const fd = new FormData();
       fd.append("file", f);
       try {
@@ -482,12 +723,15 @@
           body: fd,
         });
         const d = await r.json();
-        if (!r.ok) throw new Error(d.detail || d.message || "upload failed");
-        toast(`Document ${d.document?.status || "uploaded"}`);
+        if (!r.ok) throw new Error(formatError(d.detail || d.message, "upload failed"));
+        await notifySuccess(
+          "Document uploaded",
+          `${d.document?.filename || f.name} — status: ${d.document?.status || "uploaded"}.`
+        );
         await openDesk(t.id);
         refresh();
       } catch (e) {
-        toast(e.message, false);
+        await notifyError("Upload failed", e.message);
       }
     };
     el.querySelectorAll("[data-re]").forEach((b) => {
@@ -497,26 +741,31 @@
             method: "POST",
             headers: headers(false),
           });
-          toast("Reprocessed");
+          await notifySuccess("Reprocessed", "Document was re-embedded into the vector index.");
           await openDesk(t.id);
         } catch (e) {
-          toast(e.message, false);
+          await notifyError("Reprocess failed", e.message);
         }
       };
     });
     el.querySelectorAll("[data-del]").forEach((b) => {
       b.onclick = async () => {
-        if (!confirm("Delete document?")) return;
+        const ok = await confirmAction(
+          "Delete document?",
+          "Vectors for this file will be removed from the company namespace.",
+          "Delete"
+        );
+        if (!ok) return;
         try {
           await req(`/admin/documents/${b.dataset.del}`, {
             method: "DELETE",
             headers: headers(false),
           });
-          toast("Deleted");
+          await notifySuccess("Deleted", "Document and vectors removed.");
           await openDesk(t.id);
           refresh();
         } catch (e) {
-          toast(e.message, false);
+          await notifyError("Delete failed", e.message);
         }
       };
     });
@@ -538,87 +787,13 @@
           headers: headers(true),
           body: JSON.stringify({ model_id: $("deskModel").value }),
         });
-        toast("Model updated");
+        await notifySuccess("Model updated", `Default model for ${t.name} was saved.`);
         await openDesk(t.id);
         refresh();
       } catch (e) {
-        toast(e.message, false);
+        await notifyError("Save failed", e.message);
       }
     };
-  }
-
-  async function renderDeskMembers() {
-    const t = state.desk.tenant;
-    const el = $("tab-members");
-    el.innerHTML = `<p class="muted">Loading members…</p>`;
-    try {
-      const m = await req(`/admin/tenants/${t.id}/members`, { headers: headers(false) });
-      el.innerHTML = `
-        <div class="form-row">
-          <label class="field grow"><span>User</span>
-            <select id="deskUserSel">${state.users
-              .map((u) => `<option value="${u.id}">${esc(u.full_name)} (${esc(u.email)})</option>`)
-              .join("")}</select>
-          </label>
-          <label class="field"><span>Role</span>
-            <select id="deskMemRole">
-              <option value="tenant_member">tenant_member</option>
-              <option value="tenant_admin">tenant_admin</option>
-            </select>
-          </label>
-          <button type="button" class="btn primary" id="deskAssign">Assign</button>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>Name</th><th>Email</th><th>Role</th><th></th></tr></thead>
-            <tbody>
-              ${(m.items || [])
-                .map(
-                  (x) => `<tr>
-                <td>${esc(x.full_name)}</td>
-                <td>${esc(x.email)}</td>
-                <td>${esc(x.role)}</td>
-                <td><button class="btn sm danger" data-rm="${x.id}">Remove</button></td>
-              </tr>`
-                )
-                .join("") || `<tr><td colspan="4" class="muted">No members</td></tr>`}
-            </tbody>
-          </table>
-        </div>`;
-      $("deskAssign").onclick = async () => {
-        try {
-          await req("/admin/users/assign", {
-            method: "POST",
-            headers: headers(true),
-            body: JSON.stringify({
-              user_id: $("deskUserSel").value,
-              tenant_id: t.id,
-              role: $("deskMemRole").value,
-            }),
-          });
-          toast("User assigned");
-          renderDeskMembers();
-        } catch (e) {
-          toast(e.message, false);
-        }
-      };
-      el.querySelectorAll("[data-rm]").forEach((b) => {
-        b.onclick = async () => {
-          try {
-            await req(`/admin/tenants/${t.id}/members/${b.dataset.rm}`, {
-              method: "DELETE",
-              headers: headers(false),
-            });
-            toast("Removed");
-            renderDeskMembers();
-          } catch (e) {
-            toast(e.message, false);
-          }
-        };
-      });
-    } catch (e) {
-      el.innerHTML = `<p class="muted">${esc(e.message)}</p>`;
-    }
   }
 
   async function renderDeskUsage() {
@@ -658,7 +833,6 @@
     }
   }
 
-  // desk tabs
   document.querySelectorAll(".desk-tab").forEach((tab) => {
     tab.onclick = () => {
       state.deskTab = tab.dataset.tab;
@@ -702,7 +876,10 @@
 
   $("btnTestKey").onclick = async () => {
     const id = $("testCompany").value;
-    if (!id) return toast("Select a company", false);
+    if (!id) {
+      await notifyError("Select a company", "Choose a company before issuing a test key.");
+      return;
+    }
     try {
       const d = await req(`/admin/tenants/${id}/keys`, {
         method: "POST",
@@ -715,10 +892,14 @@
       state.testKeys[id] = d.api_key;
       sessionStorage.setItem("rag_test_keys", JSON.stringify(state.testKeys));
       updateTestMeta();
-      toast("Test key ready for this session");
+      await notifySuccess(
+        "Test key ready",
+        "This key is kept for this browser session only. Use it for Test API chat.",
+        d.api_key
+      );
       await refresh();
     } catch (e) {
-      toast(e.message, false);
+      await notifyError("Could not issue test key", e.message);
     }
   };
 
@@ -760,11 +941,14 @@
     ev.preventDefault();
     const id = $("testCompany").value;
     const q = $("testQuestion").value.trim();
-    if (!id) return toast("Select a company", false);
+    if (!id) {
+      await notifyError("Select a company", "Pick a company first.");
+      return;
+    }
     if (!q) return;
     let key = state.testKeys[id];
     if (!key) {
-      toast("Issue a test key first", false);
+      await notifyError("No test key", "Click “Issue / refresh test key” first.");
       return;
     }
     state.testMessages.push({ role: "user", content: q });
@@ -781,7 +965,7 @@
         body: JSON.stringify({ question: q, include_timings: true }),
       });
       const d = await r.json();
-      if (!r.ok) throw new Error(d.detail || d.message || r.statusText);
+      if (!r.ok) throw new Error(formatError(d.detail || d.message, r.statusText));
       state.testMessages.push({
         role: "assistant",
         content: d.answer || "(empty)",
@@ -798,102 +982,9 @@
         content: "Error: " + e.message,
       });
       renderTestMessages();
-      toast(e.message, false);
+      await notifyError("Query failed", e.message);
     } finally {
       $("btnTestSend").disabled = false;
-    }
-  };
-
-  // ── Users ──
-  function renderUsers() {
-    $("aUser").innerHTML = state.users
-      .map((u) => `<option value="${u.id}">${esc(u.full_name)} (${esc(u.email)})</option>`)
-      .join("");
-    $("aTenant").innerHTML = state.tenants
-      .map((t) => `<option value="${t.id}">${esc(t.name)}</option>`)
-      .join("");
-    $("usersBody").innerHTML = state.users
-      .map(
-        (u) => `<tr>
-        <td>${esc(u.full_name)}</td>
-        <td>${esc(u.email)}</td>
-        <td>${esc(u.role)}</td>
-        <td><span class="badge ${u.status === "active" ? "ok" : "err"}">${esc(
-          u.status
-        )}</span></td>
-        <td>${
-          u.status === "active"
-            ? `<button class="btn sm danger" data-dis="${u.id}">Disable</button>`
-            : `<button class="btn sm" data-en="${u.id}">Enable</button>`
-        }</td>
-      </tr>`
-      )
-      .join("");
-    $("usersBody").querySelectorAll("[data-dis]").forEach((b) => {
-      b.onclick = async () => {
-        try {
-          await req(`/admin/users/${b.dataset.dis}`, {
-            method: "PATCH",
-            headers: headers(true),
-            body: JSON.stringify({ status: "disabled" }),
-          });
-          toast("User disabled");
-          refresh();
-        } catch (e) {
-          toast(e.message, false);
-        }
-      };
-    });
-    $("usersBody").querySelectorAll("[data-en]").forEach((b) => {
-      b.onclick = async () => {
-        try {
-          await req(`/admin/users/${b.dataset.en}`, {
-            method: "PATCH",
-            headers: headers(true),
-            body: JSON.stringify({ status: "active" }),
-          });
-          toast("User enabled");
-          refresh();
-        } catch (e) {
-          toast(e.message, false);
-        }
-      };
-    });
-  }
-
-  $("btnCreateUser").onclick = async () => {
-    try {
-      await req("/admin/users", {
-        method: "POST",
-        headers: headers(true),
-        body: JSON.stringify({
-          email: $("uEmail").value,
-          full_name: $("uName").value,
-          role: $("uRole").value,
-          password: $("uPass").value || null,
-        }),
-      });
-      toast("User created");
-      refresh();
-    } catch (e) {
-      toast(e.message, false);
-    }
-  };
-
-  $("btnAssign").onclick = async () => {
-    try {
-      await req("/admin/users/assign", {
-        method: "POST",
-        headers: headers(true),
-        body: JSON.stringify({
-          user_id: $("aUser").value,
-          tenant_id: $("aTenant").value,
-          role: $("aRole").value,
-        }),
-      });
-      toast("Assigned to company");
-    } catch (e) {
-      toast(e.message, false);
     }
   };
 
@@ -939,7 +1030,7 @@
         };
       });
     } catch {
-      /* */
+      /* ignore model catalog errors on partial load */
     }
   }
 
@@ -950,10 +1041,10 @@
         headers: headers(true),
         body: JSON.stringify({ model_id: $("sysModel").value }),
       });
-      toast("Default model saved");
+      await notifySuccess("Default model saved", "Platform catalog default was updated.");
       renderSystem();
     } catch (e) {
-      toast(e.message, false);
+      await notifyError("Save failed", e.message);
     }
   };
 
@@ -967,39 +1058,58 @@
   $("btnAddCompany2").onclick = openAddModal;
   $("mCancel").onclick = () => $("modalAdd").classList.add("hidden");
   $("mSave").onclick = async () => {
+    const name = ($("mName").value || "").trim();
+    if (!name) {
+      await notifyError("Name required", "Enter a company name.");
+      return;
+    }
     try {
       const d = await req("/admin/onboard", {
         method: "POST",
         headers: headers(true),
         body: JSON.stringify({
-          company_name: $("mName").value,
+          company_name: name,
           key_name: $("mKeyName").value || "production",
           default_model: $("mModel").value || null,
         }),
       });
       state.testKeys[d.tenant.id] = d.api_key;
       sessionStorage.setItem("rag_test_keys", JSON.stringify(state.testKeys));
-      const box = $("mSecret");
-      box.classList.remove("hidden");
-      box.innerHTML = `<strong>Company created · copy key now</strong><br/>
-        ${esc(d.tenant.name)} · <code>${esc(d.tenant.id)}</code><br/><br/>
-        <strong>API key</strong><br/>${esc(d.api_key)}<br/>
-        <button type="button" class="btn sm" id="mCopyKey" style="margin-top:8px">Copy key</button>
-        <button type="button" class="btn sm primary" id="mOpenCfg" style="margin-top:8px">Configure company</button>`;
-      $("mCopyKey").onclick = () => copyText("API key", d.api_key);
-      $("mOpenCfg").onclick = () => {
-        $("modalAdd").classList.add("hidden");
-        openDesk(d.tenant.id);
-      };
-      toast("Company onboarded");
+      $("modalAdd").classList.add("hidden");
+      await notifySuccess(
+        "Company created",
+        `${d.tenant.name} is ready. Copy the production API key now — it is only shown once.`,
+        d.api_key
+      );
       await refresh();
+      openDesk(d.tenant.id);
     } catch (e) {
-      toast(e.message, false);
+      await notifyError("Onboard failed", e.message);
     }
   };
 
   $("companySearch").oninput = renderCompanies;
   $("btnRefresh").onclick = refresh;
 
-  refresh();
+  // Close result dialog on backdrop click
+  $("modalDialog").addEventListener("click", (ev) => {
+    if (ev.target === $("modalDialog") && dlgResolve) {
+      closeDialog(false);
+    }
+  });
+
+  // Boot: try stored key silently, else show gate (and allow empty if auth off)
+  (async function boot() {
+    const stored = cleanKey(localStorage.getItem(STORAGE_KEY) || "");
+    $("gateKey").value = stored;
+    // Try stored key first; if empty, try empty (auth may be disabled)
+    const ok = await connectWithKey(stored, { silent: true });
+    if (!ok) {
+      setConnectedUI(false);
+      // If auth disabled and empty failed for other reasons, still show gate
+      if (!stored) {
+        showGateError("");
+      }
+    }
+  })();
 })();

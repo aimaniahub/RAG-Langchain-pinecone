@@ -7,7 +7,38 @@
   <link rel="stylesheet" href="/static/admin_console.css" />
 </head>
 <body>
-  <div class="shell">
+  <!-- Auth gate: must connect with platform admin key when AUTH_ENABLED -->
+  <div id="authGate" class="auth-gate">
+    <div class="auth-card">
+      <div class="brand" style="margin-bottom:8px">
+        <div class="logo">R</div>
+        <div>
+          <div class="brand-title">RAG Platform Admin</div>
+          <div class="brand-sub">Enter your platform admin key</div>
+        </div>
+      </div>
+      <p class="muted" style="margin:0 0 8px">
+        Use the value of <code>API_KEY_ADMIN</code> or <code>BOOTSTRAP_ADMIN_KEY</code> from the server env
+        (or a DB-issued platform key). Client tenant keys will not work here.
+      </p>
+      <label class="field">
+        <span>Platform admin key</span>
+        <div class="key-row">
+          <input id="gateKey" type="password" placeholder="Paste admin key…" autocomplete="off" spellcheck="false" />
+          <button type="button" class="btn sm" id="gateToggle" title="Show/hide">Show</button>
+        </div>
+      </label>
+      <p id="gateError" class="field-error hidden"></p>
+      <p id="gateHint" class="help" style="margin:0">
+        Tip: no surrounding quotes. Restart the server after changing env vars.
+      </p>
+      <div class="modal-actions" style="margin-top:12px">
+        <button type="button" class="btn primary" id="gateConnect">Connect</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="appShell" class="shell hidden">
     <aside class="sidebar">
       <div class="brand">
         <div class="logo">R</div>
@@ -20,15 +51,15 @@
         <button type="button" class="nav-item active" data-view="home">Home</button>
         <button type="button" class="nav-item" data-view="companies">Companies</button>
         <button type="button" class="nav-item" data-view="test">Test API</button>
-        <button type="button" class="nav-item" data-view="users">Users</button>
         <button type="button" class="nav-item" data-view="system">System</button>
       </nav>
       <div class="sidebar-foot">
-        <label class="field">
-          <span>Platform admin key</span>
-          <input id="apiKey" type="password" placeholder="dev-admin-key" autocomplete="off" />
-        </label>
-        <p class="help">Env <code>API_KEY_ADMIN</code> or DB platform key. Never share with clients.</p>
+        <div class="auth-status">
+          <span class="lbl">Signed in as admin</span>
+          <span id="authKeyHint" class="mono muted">—</span>
+        </div>
+        <button type="button" class="btn sm" id="btnDisconnect" style="width:100%;margin-top:8px">Change key</button>
+        <p class="help" style="margin-top:8px">Env <code>API_KEY_ADMIN</code> · never share with clients.</p>
       </div>
     </aside>
 
@@ -44,8 +75,6 @@
           <a class="btn" href="/docs" target="_blank" rel="noopener">OpenAPI</a>
         </div>
       </header>
-
-      <div id="toast" class="toast hidden"></div>
 
       <!-- HOME -->
       <section class="view active" id="view-home">
@@ -111,49 +140,6 @@
         </div>
       </section>
 
-      <!-- USERS -->
-      <section class="view" id="view-users">
-        <div class="card">
-          <h3>Create operator (Postgres)</h3>
-          <div class="form-grid">
-            <label class="field"><span>Email</span><input id="uEmail" type="email" /></label>
-            <label class="field"><span>Full name</span><input id="uName" /></label>
-            <label class="field"><span>Role</span>
-              <select id="uRole">
-                <option value="operator">operator</option>
-                <option value="platform_admin">platform_admin</option>
-                <option value="viewer">viewer</option>
-              </select>
-            </label>
-            <label class="field"><span>Password</span><input id="uPass" type="password" /></label>
-          </div>
-          <button type="button" class="btn primary" id="btnCreateUser">Create user</button>
-        </div>
-        <div class="card">
-          <h3>Assign user to company</h3>
-          <div class="form-grid">
-            <label class="field"><span>User</span><select id="aUser"></select></label>
-            <label class="field"><span>Company</span><select id="aTenant"></select></label>
-            <label class="field"><span>Role</span>
-              <select id="aRole">
-                <option value="tenant_member">tenant_member</option>
-                <option value="tenant_admin">tenant_admin</option>
-              </select>
-            </label>
-          </div>
-          <button type="button" class="btn" id="btnAssign">Assign</button>
-        </div>
-        <div class="card">
-          <h3>Users</h3>
-          <div class="table-wrap">
-            <table>
-              <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr></thead>
-              <tbody id="usersBody"></tbody>
-            </table>
-          </div>
-        </div>
-      </section>
-
       <!-- SYSTEM -->
       <section class="view" id="view-system">
         <div class="card">
@@ -191,6 +177,19 @@
     </div>
   </div>
 
+  <!-- RESULT / CONFIRM DIALOG -->
+  <div id="modalDialog" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-card dialog-card">
+      <div id="dlgIcon" class="dlg-icon ok">✓</div>
+      <h3 id="dlgTitle">Done</h3>
+      <p id="dlgMessage" class="muted" style="margin:0;white-space:pre-wrap"></p>
+      <div id="dlgSecret" class="secret-box hidden"></div>
+      <div class="modal-actions" id="dlgActions">
+        <button type="button" class="btn primary" id="dlgOk">OK</button>
+      </div>
+    </div>
+  </div>
+
   <!-- COMPANY DESK DRAWER -->
   <div id="desk" class="desk hidden">
     <div class="desk-backdrop" id="deskBackdrop"></div>
@@ -207,7 +206,6 @@
         <button type="button" class="desk-tab" data-tab="keys">API keys</button>
         <button type="button" class="desk-tab" data-tab="docs">Documents</button>
         <button type="button" class="desk-tab" data-tab="models">Models</button>
-        <button type="button" class="desk-tab" data-tab="members">Users</button>
         <button type="button" class="desk-tab" data-tab="usage">Usage</button>
       </nav>
       <div class="desk-body">
@@ -215,7 +213,6 @@
         <div class="desk-pane" id="tab-keys"></div>
         <div class="desk-pane" id="tab-docs"></div>
         <div class="desk-pane" id="tab-models"></div>
-        <div class="desk-pane" id="tab-members"></div>
         <div class="desk-pane" id="tab-usage"></div>
       </div>
     </div>
