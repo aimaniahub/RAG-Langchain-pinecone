@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RAG Platform Admin</title>
+  <link rel="stylesheet" href="/static/admin_console.css" />
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="logo">R</div>
+        <div>
+          <div class="brand-title">RAG Platform</div>
+          <div class="brand-sub">Operator console</div>
+        </div>
+      </div>
+      <nav class="nav">
+        <button type="button" class="nav-item active" data-view="home">Home</button>
+        <button type="button" class="nav-item" data-view="companies">Companies</button>
+        <button type="button" class="nav-item" data-view="test">Test API</button>
+        <button type="button" class="nav-item" data-view="users">Users</button>
+        <button type="button" class="nav-item" data-view="system">System</button>
+      </nav>
+      <div class="sidebar-foot">
+        <label class="field">
+          <span>Platform admin key</span>
+          <input id="apiKey" type="password" placeholder="dev-admin-key" autocomplete="off" />
+        </label>
+        <p class="help">Env <code>API_KEY_ADMIN</code> or DB platform key. Never share with clients.</p>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h1 id="pageTitle">Home</h1>
+          <p class="muted" id="pageSub">Setup checklist and next actions</p>
+        </div>
+        <div class="top-actions">
+          <span id="statusPill" class="pill">…</span>
+          <button type="button" class="btn" id="btnRefresh">Refresh</button>
+          <a class="btn" href="/docs" target="_blank" rel="noopener">OpenAPI</a>
+        </div>
+      </header>
+
+      <div id="toast" class="toast hidden"></div>
+
+      <!-- HOME -->
+      <section class="view active" id="view-home">
+        <div class="banner">
+          <strong>This is an API platform</strong>
+          <p class="muted" style="margin:6px 0 0">Client companies call your endpoints with an API key. You manage companies, keys, and documents here.</p>
+        </div>
+        <div class="progress-card">
+          <div class="progress-head">
+            <span>Setup progress</span>
+            <strong id="progressText">0 / 7</strong>
+          </div>
+          <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+          <div class="next-box" id="nextBox">Loading…</div>
+        </div>
+        <div class="stat-grid" id="statGrid"></div>
+        <div class="card">
+          <h3>Checklist</h3>
+          <div id="checklist" class="checklist"></div>
+        </div>
+        <div class="card">
+          <h3>How it works</h3>
+          <ol id="howList" class="how-list"></ol>
+        </div>
+      </section>
+
+      <!-- COMPANIES -->
+      <section class="view" id="view-companies">
+        <div class="toolbar">
+          <input id="companySearch" class="search" placeholder="Search companies…" />
+          <button type="button" class="btn primary" id="btnAddCompany">+ Add company</button>
+        </div>
+        <div id="companiesEmpty" class="empty hidden">
+          <h3>No companies yet</h3>
+          <p class="muted">Create a client company, issue an API key, upload docs, then test.</p>
+          <button type="button" class="btn primary" id="btnAddCompany2">Add company</button>
+        </div>
+        <div class="company-grid" id="companyGrid"></div>
+      </section>
+
+      <!-- TEST API -->
+      <section class="view" id="view-test">
+        <div class="card">
+          <h3>Test API (live RAG)</h3>
+          <p class="muted">Select a company and chat using a real tenant API key (same path clients use).</p>
+          <div class="form-row">
+            <label class="field grow">
+              <span>Company</span>
+              <select id="testCompany"></select>
+            </label>
+            <button type="button" class="btn" id="btnTestKey">Issue / refresh test key</button>
+          </div>
+          <div class="meta-row" id="testMeta">No company selected</div>
+        </div>
+        <div class="test-chat card">
+          <div id="testMessages" class="test-messages">
+            <div class="empty-hint">Answers come from that company’s documents via POST /query.</div>
+          </div>
+          <form id="testForm" class="test-form">
+            <input id="testQuestion" placeholder="Ask a question…" autocomplete="off" />
+            <button type="submit" class="btn primary" id="btnTestSend">Send</button>
+          </form>
+        </div>
+      </section>
+
+      <!-- USERS -->
+      <section class="view" id="view-users">
+        <div class="card">
+          <h3>Create operator (Postgres)</h3>
+          <div class="form-grid">
+            <label class="field"><span>Email</span><input id="uEmail" type="email" /></label>
+            <label class="field"><span>Full name</span><input id="uName" /></label>
+            <label class="field"><span>Role</span>
+              <select id="uRole">
+                <option value="operator">operator</option>
+                <option value="platform_admin">platform_admin</option>
+                <option value="viewer">viewer</option>
+              </select>
+            </label>
+            <label class="field"><span>Password</span><input id="uPass" type="password" /></label>
+          </div>
+          <button type="button" class="btn primary" id="btnCreateUser">Create user</button>
+        </div>
+        <div class="card">
+          <h3>Assign user to company</h3>
+          <div class="form-grid">
+            <label class="field"><span>User</span><select id="aUser"></select></label>
+            <label class="field"><span>Company</span><select id="aTenant"></select></label>
+            <label class="field"><span>Role</span>
+              <select id="aRole">
+                <option value="tenant_member">tenant_member</option>
+                <option value="tenant_admin">tenant_admin</option>
+              </select>
+            </label>
+          </div>
+          <button type="button" class="btn" id="btnAssign">Assign</button>
+        </div>
+        <div class="card">
+          <h3>Users</h3>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr></thead>
+              <tbody id="usersBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- SYSTEM -->
+      <section class="view" id="view-system">
+        <div class="card">
+          <h3>Integrations</h3>
+          <div class="integ-grid" id="integGrid"></div>
+        </div>
+        <div class="card">
+          <h3>Platform defaults</h3>
+          <div class="form-grid">
+            <label class="field"><span>Default OpenRouter model</span>
+              <input id="sysModel" placeholder="openai/gpt-4o-mini" />
+            </label>
+            <button type="button" class="btn primary" id="btnSaveModel" style="align-self:end">Save catalog default</button>
+          </div>
+          <div class="chip-row" id="modelChips"></div>
+          <p class="muted" id="embedInfo" style="margin-top:12px"></p>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- ADD COMPANY MODAL -->
+  <div id="modalAdd" class="modal hidden">
+    <div class="modal-card">
+      <h3>Add company</h3>
+      <p class="muted">Creates tenant + first API key (recommended).</p>
+      <label class="field"><span>Company name *</span><input id="mName" placeholder="Acme Corp" /></label>
+      <label class="field"><span>Key name</span><input id="mKeyName" value="production" /></label>
+      <label class="field"><span>LLM model</span><input id="mModel" placeholder="openai/gpt-4o-mini" /></label>
+      <div class="modal-actions">
+        <button type="button" class="btn" id="mCancel">Cancel</button>
+        <button type="button" class="btn primary" id="mSave">Create &amp; issue key</button>
+      </div>
+      <div id="mSecret" class="secret-box hidden"></div>
+    </div>
+  </div>
+
+  <!-- COMPANY DESK DRAWER -->
+  <div id="desk" class="desk hidden">
+    <div class="desk-backdrop" id="deskBackdrop"></div>
+    <div class="desk-panel">
+      <header class="desk-head">
+        <div>
+          <h2 id="deskTitle">Company</h2>
+          <p class="muted" id="deskSub"></p>
+        </div>
+        <button type="button" class="btn" id="deskClose">Close</button>
+      </header>
+      <nav class="desk-tabs" id="deskTabs">
+        <button type="button" class="desk-tab active" data-tab="overview">Overview</button>
+        <button type="button" class="desk-tab" data-tab="keys">API keys</button>
+        <button type="button" class="desk-tab" data-tab="docs">Documents</button>
+        <button type="button" class="desk-tab" data-tab="models">Models</button>
+        <button type="button" class="desk-tab" data-tab="members">Users</button>
+        <button type="button" class="desk-tab" data-tab="usage">Usage</button>
+      </nav>
+      <div class="desk-body">
+        <div class="desk-pane active" id="tab-overview"></div>
+        <div class="desk-pane" id="tab-keys"></div>
+        <div class="desk-pane" id="tab-docs"></div>
+        <div class="desk-pane" id="tab-models"></div>
+        <div class="desk-pane" id="tab-members"></div>
+        <div class="desk-pane" id="tab-usage"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/admin_console.js"></script>
+</body>
+</html>

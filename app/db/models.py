@@ -1,11 +1,11 @@
-"""SQLAlchemy models — multi-tenant API platform."""
+"""SQLAlchemy models — multi-tenant RAG API platform (Postgres / SQLite)."""
 
 from __future__ import annotations
 
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -16,7 +16,7 @@ def _uuid() -> str:
 
 
 class Tenant(Base):
-    """Client company on the platform."""
+    """Client company that consumes the RAG API."""
 
     __tablename__ = "tenants"
 
@@ -35,10 +35,48 @@ class Tenant(Base):
 
     api_keys: Mapped[list[ApiKey]] = relationship(back_populates="tenant")
     documents: Mapped[list[Document]] = relationship(back_populates="tenant")
+    members: Mapped[list[TenantMember]] = relationship(back_populates="tenant")
+
+
+class User(Base):
+    """Platform or tenant operator (stored in Postgres)."""
+
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    email: Mapped[str] = mapped_column(String(256), unique=True, nullable=False, index=True)
+    full_name: Mapped[str] = mapped_column(String(256), nullable=False)
+    # platform_admin | operator | viewer
+    role: Mapped[str] = mapped_column(String(32), default="operator")
+    status: Mapped[str] = mapped_column(String(32), default="active")  # active | disabled
+    password_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    memberships: Mapped[list[TenantMember]] = relationship(back_populates="user")
+
+
+class TenantMember(Base):
+    """Assign a user to a tenant with a role."""
+
+    __tablename__ = "tenant_members"
+    __table_args__ = (UniqueConstraint("tenant_id", "user_id", name="uq_tenant_user"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    # tenant_admin | tenant_member
+    role: Mapped[str] = mapped_column(String(32), default="tenant_member")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    tenant: Mapped[Tenant] = relationship(back_populates="members")
+    user: Mapped[User] = relationship(back_populates="memberships")
 
 
 class ApiKey(Base):
-    """Hashed API keys issued to tenants (or platform admin)."""
+    """API keys for client apps (hashed). Plaintext shown only at creation."""
 
     __tablename__ = "api_keys"
 
@@ -49,11 +87,12 @@ class ApiKey(Base):
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     key_prefix: Mapped[str] = mapped_column(String(24), nullable=False, index=True)
     key_hash: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
-    # comma-separated scopes: query:read,ingest:write,docs:read,platform:admin
+    # comma-separated: query:read,ingest:write,docs:read,platform:admin
     scopes: Mapped[str] = mapped_column(String(512), default="query:read")
-    # role: platform_admin | tenant
+    # platform_admin | tenant
     role: Mapped[str] = mapped_column(String(32), default="tenant")
     status: Mapped[str] = mapped_column(String(32), default="active")  # active | revoked
+    created_by_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -61,15 +100,13 @@ class ApiKey(Base):
 
 
 class ModelCatalog(Base):
-    """Allowed LLM models for the platform."""
-
     __tablename__ = "model_catalog"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     provider: Mapped[str] = mapped_column(String(64), default="openrouter")
     model_id: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
     label: Mapped[str] = mapped_column(String(256), nullable=False)
-    enabled: Mapped[int] = mapped_column(Integer, default=1)  # 1/0 for sqlite simplicity
+    enabled: Mapped[int] = mapped_column(Integer, default=1)
     is_default: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

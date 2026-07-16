@@ -1,12 +1,7 @@
 """RAG API Platform — multi-tenant backend for company integrations.
 
-Product: HTTP API + optional operator Admin UI.
-Clients call endpoints with API keys (not a chat app).
-
-  GET  /                 service descriptor
-  GET  /docs             OpenAPI
-  *    /api/v1/*         public + admin APIs
-  GET  /admin            operator console (if enabled)
+Primary product: HTTP API + enterprise Admin console.
+Clients: API keys + endpoints. Operators: /admin.
 """
 
 from collections.abc import AsyncIterator
@@ -19,7 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.middleware import RequestContextMiddleware
-from app.api.routes import admin, chat, documents, health, ingest, metrics, platform, query
+from app.api.routes import admin_console, chat, documents, health, ingest, metrics, query
 from app.config import get_settings, settings
 from app.core.exceptions import AppError, NotConfiguredError, UpstreamError
 from app.core.logging import setup_logging
@@ -50,13 +45,12 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     if live.auto_migrate:
         try:
             from app.db.session import get_session_factory, init_db
+            from app.services.admin_service import AdminService
 
             init_db()
             db = get_session_factory()()
             try:
-                from app.services.platform_service import PlatformService
-
-                PlatformService(db).ensure_default_models()
+                AdminService(db).seed_defaults()
             finally:
                 db.close()
         except Exception as exc:  # noqa: BLE001
@@ -65,11 +59,10 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
                 raise
 
     logger.info(
-        "Starting %s mode=%s auth=%s chat_ui=%s admin_ui=%s",
+        "Starting %s mode=%s auth=%s admin_ui=%s",
         live.app_name,
         live.product_mode,
         live.auth_enabled,
-        live.enable_chat_ui,
         live.enable_admin_ui,
     )
 
@@ -90,11 +83,11 @@ def create_app() -> FastAPI:
     application = FastAPI(
         title=settings.app_name,
         description=(
-            "Multi-tenant RAG API platform. "
-            "Integrate with X-API-Key. "
-            "Admin: tenants, keys, models, documents, usage."
+            "Enterprise multi-tenant RAG API. "
+            "Client companies integrate with API keys. "
+            "Operators manage tenants, keys, models, and documents in Admin."
         ),
-        version="1.0.0",
+        version="1.1.0",
         lifespan=lifespan,
         docs_url=settings.docs_url,
         redoc_url=settings.redoc_url,
@@ -107,7 +100,7 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
-        expose_headers=["X-Request-ID", "X-RateLimit-Limit", "X-RateLimit-Remaining"],
+        expose_headers=["X-Request-ID"],
     )
 
     def _err(status: int, message: str, request: Request) -> JSONResponse:
@@ -131,19 +124,20 @@ def create_app() -> FastAPI:
         return _err(400, exc.message, request)
 
     prefix = settings.api_prefix.rstrip("/") or "/api/v1"
+
+    # Public / client APIs
     application.include_router(health.router, prefix=prefix)
     application.include_router(query.router, prefix=prefix)
     application.include_router(ingest.router, prefix=prefix)
     application.include_router(documents.router, prefix=prefix)
-    application.include_router(platform.router, prefix=prefix)
-    application.include_router(admin.router, prefix=prefix)
     application.include_router(metrics.router, prefix=prefix)
 
-    # Optional chat API (not primary product)
+    # Enterprise admin console API (single source of truth)
+    application.include_router(admin_console.router, prefix=prefix)
+
     if settings.enable_chat_ui or settings.product_mode == "full_demo":
         application.include_router(chat.router, prefix=prefix)
 
-    # Static / optional UIs
     if settings.ui_enabled and STATIC_DIR.is_dir():
         application.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
@@ -151,7 +145,7 @@ def create_app() -> FastAPI:
 
             @application.get("/admin", include_in_schema=False)
             def admin_page() -> FileResponse:
-                return FileResponse(STATIC_DIR / "platform.html")
+                return FileResponse(STATIC_DIR / "admin_console.html")
 
         if settings.enable_chat_ui or settings.product_mode == "full_demo":
 
@@ -170,37 +164,31 @@ def create_app() -> FastAPI:
         return {
             "service": settings.app_name,
             "product": "rag-api-platform",
-            "version": "1.0.0",
+            "version": "1.1.0",
             "mode": settings.product_mode,
-            "message": "RAG API backend. Integrate with API keys and HTTP endpoints.",
+            "message": (
+                "RAG API backend for client companies. "
+                "Integrate with X-API-Key. Operators use /admin."
+            ),
             "docs": settings.docs_url or "disabled",
             "health": f"{prefix}/health",
             "ready": f"{prefix}/ready",
-            "endpoints": {
+            "admin": "/admin" if settings.enable_admin_ui else None,
+            "client_api": {
                 "query": f"POST {prefix}/query",
-                "ingest_text": f"POST {prefix}/ingest",
+                "ingest": f"POST {prefix}/ingest",
                 "ingest_file": f"POST {prefix}/ingest/file",
-                "documents": f"GET/POST {prefix}/documents",
-                "admin_tenants": f"{prefix}/admin/tenants",
-                "admin_keys": f"{prefix}/admin/keys",
-                "admin_models": f"{prefix}/admin/models",
+                "documents": f"{prefix}/documents",
+                "auth": "X-API-Key: <tenant_api_key>",
             },
-            "auth": {
-                "header": "X-API-Key: <key>",
-                "or": "Authorization: Bearer <key>",
-                "enabled": settings.auth_enabled,
+            "admin_api": {
+                "setup": f"GET {prefix}/admin/setup",
+                "onboard": f"POST {prefix}/admin/onboard",
+                "tenants": f"{prefix}/admin/tenants",
+                "keys": f"{prefix}/admin/keys",
+                "users": f"{prefix}/admin/users",
+                "models": f"{prefix}/admin/models",
             },
-            "admin_ui": "/admin" if settings.enable_admin_ui else None,
-        }
-
-    @application.get("/api")
-    def api_info() -> dict:
-        return {
-            "service": settings.app_name,
-            "prefix": prefix,
-            "docs": settings.docs_url or "disabled",
-            "health": f"{prefix}/health",
-            "product_mode": settings.product_mode,
         }
 
     return application

@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     api_key_admin: str = "dev-admin-key"
     api_key_user: str = "dev-user-key"
     bootstrap_admin_key: str = ""
+    bootstrap_admin_email: str = "admin@platform.local"
+    bootstrap_admin_name: str = "Platform Admin"
+    bootstrap_admin_password: str = "change-me"
 
     # Rate limits
     rate_limit_enabled: bool = True
@@ -112,6 +115,8 @@ class Settings(BaseSettings):
     enable_dev_ui: bool = False
     enable_admin_ui: bool = True
     allow_tenant_model_override: bool = True
+    # Public URL for Integration card (Railway custom domain)
+    public_base_url: str = ""
 
     # Logging / UI
     log_format: str = "text"

@@ -1,4 +1,4 @@
-"""Document upload APIs — platform admin or tenant ingest scope."""
+"""Client document APIs (tenant-scoped via API key). Admin doc routes live in admin_console."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.core.exceptions import AppError, IngestError, NotConfiguredError
 from app.core.logging import get_logger
 from app.core.rate_limit import rate_limit_dependency
-from app.core.security import Principal, require_platform_admin, require_scopes
+from app.core.security import Principal, require_scopes
 from app.db.session import get_db
 from app.services.document_service import DocumentService
 
@@ -32,8 +32,6 @@ def _doc_dict(d) -> dict:
         "filename": d.filename,
         "content_type": d.content_type,
         "size_bytes": d.size_bytes,
-        "storage_key": d.storage_key,
-        "storage_backend": d.storage_backend,
         "status": d.status,
         "namespace": d.namespace,
         "chunk_count": d.chunk_count,
@@ -41,11 +39,9 @@ def _doc_dict(d) -> dict:
         "error": d.error,
         "uploaded_by": d.uploaded_by,
         "created_at": d.created_at.isoformat() if d.created_at else None,
-        "updated_at": d.updated_at.isoformat() if d.updated_at else None,
     }
 
 
-# ---- Tenant-facing (client company API key) ----
 @router.get("/documents")
 def list_my_documents(
     principal: Principal = Depends(require_scopes("docs:read")),
@@ -81,7 +77,6 @@ async def upload_my_document(
     _: None = Depends(rate_limit_dependency("ingest")),
     db: Session = Depends(get_db),
 ) -> dict:
-    """Client upload → storage → auto-embed into tenant namespace."""
     data = await file.read()
     filename = file.filename or "upload.bin"
     do_async = str(async_process).lower() in {"1", "true", "yes", "on"}
@@ -126,74 +121,6 @@ def delete_my_document(
     doc = DocumentService(db).get(document_id, tenant_id=tid)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
-    try:
-        DocumentService(db).delete_document(document_id)
-        return {"status": "ok", "deleted": document_id}
-    except Exception as exc:  # noqa: BLE001
-        raise _map(exc) from exc
-
-
-# ---- Platform admin (all tenants) ----
-@router.get("/admin/documents")
-def admin_list_documents(
-    tenant_id: str | None = None,
-    principal: Principal = Depends(require_platform_admin()),
-    db: Session = Depends(get_db),
-) -> dict:
-    _ = principal
-    items = DocumentService(db).list_documents(tenant_id=tenant_id)
-    return {"items": [_doc_dict(d) for d in items], "count": len(items)}
-
-
-@router.post("/admin/tenants/{tenant_id}/documents")
-async def admin_upload_for_tenant(
-    tenant_id: str,
-    file: UploadFile = File(...),
-    principal: Principal = Depends(require_platform_admin()),
-    db: Session = Depends(get_db),
-) -> dict:
-    from app.services.platform_service import PlatformService
-
-    t = PlatformService(db).get_tenant(tenant_id)
-    if not t:
-        raise HTTPException(status_code=404, detail="Tenant not found")
-    data = await file.read()
-    try:
-        doc = DocumentService(db).upload(
-            filename=file.filename or "upload.bin",
-            data=data,
-            content_type=file.content_type or "application/octet-stream",
-            namespace=t.pinecone_namespace,
-            uploaded_by=principal.key_name,
-            process_now=True,
-            tenant_id=t.id,
-        )
-        return {"status": "ok", "document": _doc_dict(doc)}
-    except Exception as exc:  # noqa: BLE001
-        raise _map(exc) from exc
-
-
-@router.post("/admin/documents/{document_id}/reprocess")
-def reprocess_document(
-    document_id: str,
-    principal: Principal = Depends(require_platform_admin()),
-    db: Session = Depends(get_db),
-) -> dict:
-    _ = principal
-    try:
-        doc = DocumentService(db).process_document(document_id)
-        return {"status": "ok", "document": _doc_dict(doc)}
-    except Exception as exc:  # noqa: BLE001
-        raise _map(exc) from exc
-
-
-@router.delete("/admin/documents/{document_id}")
-def admin_delete_document(
-    document_id: str,
-    principal: Principal = Depends(require_platform_admin()),
-    db: Session = Depends(get_db),
-) -> dict:
-    _ = principal
     try:
         DocumentService(db).delete_document(document_id)
         return {"status": "ok", "deleted": document_id}
