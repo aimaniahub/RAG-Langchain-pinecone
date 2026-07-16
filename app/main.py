@@ -93,7 +93,7 @@ def create_app() -> FastAPI:
         redoc_url=settings.redoc_url,
     )
 
-    application.add_middleware(RequestContextMiddleware)
+    # CORS first (outermost last registered in Starlette)
     application.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origin_list,
@@ -102,6 +102,8 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
         expose_headers=["X-Request-ID"],
     )
+    # Pure ASGI request-id logger (must not use BaseHTTPMiddleware — breaks 401 JSON)
+    application.add_middleware(RequestContextMiddleware)
 
     def _err(status: int, message: str, request: Request) -> JSONResponse:
         rid = getattr(request.state, "request_id", None)

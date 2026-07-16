@@ -3,7 +3,7 @@
 from fastapi import APIRouter
 
 from app.config import settings
-from app.db.session import check_db
+from app.db.session import check_db, db_error_hint
 from app.models.schemas import HealthResponse, ReadyResponse
 
 router = APIRouter(tags=["health"])
@@ -42,6 +42,8 @@ def ready() -> ReadyResponse:
     if not storage_ok:
         missing.append("Storage")
 
+    db_hint = None if db_ok else db_error_hint()
+
     # core ready for RAG needs OR + Pinecone + DB; storage required for uploads
     if or_ok and pc_ok and db_ok:
         status = "ready" if not missing else "degraded"
@@ -55,6 +57,8 @@ def ready() -> ReadyResponse:
     else:
         status = "not_ready"
         detail = "Missing: " + ", ".join(missing) if missing else "not ready"
+        if db_hint:
+            detail = f"{detail}. DB: {db_hint}"
 
     return ReadyResponse(
         status=status if status != "degraded" else "ready",
@@ -73,9 +77,12 @@ def ready() -> ReadyResponse:
             "rerank": settings.rerank_enabled,
             "streaming": settings.streaming_enabled,
             "database": db_ok,
+            "database_hint": db_hint,
             "storage": storage_ok,
             "storage_backend": settings.storage_backend,
             "retrieve_top_k": settings.retrieve_top_k,
             "return_top_n": settings.return_top_n,
+            "db_dialect": (settings.sqlalchemy_database_url.split("://")[0]
+                           if settings.database_url else None),
         },
     )

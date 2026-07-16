@@ -166,7 +166,14 @@ class Settings(BaseSettings):
 
     @property
     def sqlalchemy_database_url(self) -> str:
-        return self.database_url
+        """Normalize DB URL for SQLAlchemy + psycopg3 (Railway Postgres)."""
+        url = (self.database_url or "").strip()
+        if url.startswith("postgres://"):
+            url = "postgresql://" + url[len("postgres://") :]
+        # requirements use psycopg v3 — force the dialect so connect works on Railway
+        if url.startswith("postgresql://") and "+psycopg" not in url and "+asyncpg" not in url:
+            url = "postgresql+psycopg://" + url[len("postgresql://") :]
+        return url
 
     @property
     def docs_url(self) -> str | None:

@@ -10,7 +10,7 @@ from fastapi import Depends, Header, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.db.session import get_db
+from app.db.session import get_session_factory
 
 
 @dataclass(slots=True)
@@ -208,16 +208,31 @@ def authenticate_request(
     return principal
 
 
+def _optional_db() -> Session | None:
+    """Best-effort DB session for auth (env keys work even if Postgres is down)."""
+    try:
+        return get_session_factory()()
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def require_auth():
     """Any valid API key."""
 
     async def _dep(
         request: Request,
-        db: Session = Depends(get_db),
         x_api_key: str | None = Header(default=None, alias="X-API-Key"),
         authorization: str | None = Header(default=None),
     ) -> Principal:
-        principal = authenticate_request(db, x_api_key, authorization)
+        db = _optional_db()
+        try:
+            principal = authenticate_request(db, x_api_key, authorization)
+        finally:
+            if db is not None:
+                try:
+                    db.close()
+                except Exception:  # noqa: BLE001
+                    pass
         request.state.principal = principal
         return principal
 
@@ -229,11 +244,18 @@ def require_scopes(*scopes: str):
 
     async def _dep(
         request: Request,
-        db: Session = Depends(get_db),
         x_api_key: str | None = Header(default=None, alias="X-API-Key"),
         authorization: str | None = Header(default=None),
     ) -> Principal:
-        principal = authenticate_request(db, x_api_key, authorization)
+        db = _optional_db()
+        try:
+            principal = authenticate_request(db, x_api_key, authorization)
+        finally:
+            if db is not None:
+                try:
+                    db.close()
+                except Exception:  # noqa: BLE001
+                    pass
         missing = [s for s in scopes if not principal.has_scope(s)]
         if missing:
             raise HTTPException(
@@ -255,11 +277,18 @@ def require_roles(*roles: str):
 
     async def _dep(
         request: Request,
-        db: Session = Depends(get_db),
         x_api_key: str | None = Header(default=None, alias="X-API-Key"),
         authorization: str | None = Header(default=None),
     ) -> Principal:
-        principal = authenticate_request(db, x_api_key, authorization)
+        db = _optional_db()
+        try:
+            principal = authenticate_request(db, x_api_key, authorization)
+        finally:
+            if db is not None:
+                try:
+                    db.close()
+                except Exception:  # noqa: BLE001
+                    pass
         mapped = set(roles)
         if "admin" in mapped:
             mapped.add("platform_admin")
