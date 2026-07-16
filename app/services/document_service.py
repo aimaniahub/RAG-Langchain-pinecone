@@ -77,7 +77,19 @@ class DocumentService:
         doc_id = str(uuid.uuid4())
         ns = namespace or settings.pinecone_namespace or "default"
         safe_name = Path(filename).name.replace(" ", "_")
-        storage_key = f"company/{tenant_id or 'platform'}/{doc_id}/original/{safe_name}"
+        # Company-wise layout in S3/local:
+        #   companies/{tenant_id|slug}/documents/{doc_id}/{filename}
+        folder = tenant_id or "platform"
+        if tenant_id:
+            try:
+                from app.db.models import Tenant
+
+                t = self.db.get(Tenant, tenant_id)
+                if t and t.slug:
+                    folder = t.slug
+            except Exception:  # noqa: BLE001
+                folder = tenant_id
+        storage_key = f"companies/{folder}/documents/{doc_id}/{safe_name}"
 
         self.storage.put_bytes(storage_key, data, content_type=content_type)
 

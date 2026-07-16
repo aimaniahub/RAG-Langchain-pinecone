@@ -80,6 +80,9 @@ def ready() -> ReadyResponse:
             "database_hint": db_hint,
             "storage": storage_ok,
             "storage_backend": settings.storage_backend,
+            "s3_configured": settings.is_s3_configured,
+            "s3_bucket": settings.s3_bucket_name or None,
+            "s3_endpoint_set": bool(settings.s3_endpoint_url.strip()),
             "retrieve_top_k": settings.retrieve_top_k,
             "return_top_n": settings.return_top_n,
             "db_dialect": (settings.sqlalchemy_database_url.split("://")[0]

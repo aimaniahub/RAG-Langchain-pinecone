@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 from functools import lru_cache
 from typing import Any
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -135,6 +136,49 @@ class Settings(BaseSettings):
         if url.startswith("postgres://"):
             return "postgresql://" + url[len("postgres://") :]
         return url
+
+    @model_validator(mode="after")
+    def apply_storage_env_aliases(self) -> Settings:
+        """Map Railway Bucket / AWS standard env names → S3_* settings.
+
+        Railway Storage Buckets inject:
+          BUCKET, ACCESS_KEY_ID, SECRET_ACCESS_KEY, ENDPOINT, REGION
+        AWS-style:
+          AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_ENDPOINT_URL, AWS_REGION
+        """
+
+        def first(*names: str) -> str:
+            for n in names:
+                v = (os.environ.get(n) or "").strip()
+                if v:
+                    return v
+            return ""
+
+        if not self.s3_bucket_name.strip():
+            self.s3_bucket_name = first(
+                "S3_BUCKET_NAME", "BUCKET", "AWS_S3_BUCKET", "BUCKET_NAME"
+            )
+        if not self.s3_access_key_id.strip():
+            self.s3_access_key_id = first(
+                "S3_ACCESS_KEY_ID", "ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID"
+            )
+        if not self.s3_secret_access_key.strip():
+            self.s3_secret_access_key = first(
+                "S3_SECRET_ACCESS_KEY", "SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY"
+            )
+        if not self.s3_endpoint_url.strip():
+            self.s3_endpoint_url = first(
+                "S3_ENDPOINT_URL",
+                "ENDPOINT",
+                "AWS_ENDPOINT_URL",
+                "AWS_ENDPOINT",
+                "S3_ENDPOINT",
+            )
+        if not self.s3_region.strip() or self.s3_region.strip() == "auto":
+            region = first("S3_REGION", "REGION", "AWS_REGION")
+            if region:
+                self.s3_region = region
+        return self
 
     @property
     def is_production(self) -> bool:
