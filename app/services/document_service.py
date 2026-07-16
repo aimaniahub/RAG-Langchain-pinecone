@@ -37,16 +37,23 @@ class DocumentService:
         self.embedding_service = embedding_service or EmbeddingService()
         self.pinecone_client = pinecone_client or PineconeClient()
 
-    def list_documents(self, limit: int = 100) -> list[Document]:
-        return (
-            self.db.query(Document)
-            .order_by(Document.created_at.desc())
-            .limit(limit)
-            .all()
-        )
+    def list_documents(
+        self,
+        limit: int = 100,
+        tenant_id: str | None = None,
+    ) -> list[Document]:
+        q = self.db.query(Document).order_by(Document.created_at.desc())
+        if tenant_id:
+            q = q.filter(Document.tenant_id == tenant_id)
+        return q.limit(limit).all()
 
-    def get(self, document_id: str) -> Document | None:
-        return self.db.get(Document, document_id)
+    def get(self, document_id: str, tenant_id: str | None = None) -> Document | None:
+        doc = self.db.get(Document, document_id)
+        if not doc:
+            return None
+        if tenant_id and doc.tenant_id and doc.tenant_id != tenant_id:
+            return None
+        return doc
 
     def upload(
         self,
@@ -56,6 +63,7 @@ class DocumentService:
         namespace: str | None = None,
         uploaded_by: str | None = None,
         process_now: bool = True,
+        tenant_id: str | None = None,
     ) -> Document:
         if not data:
             raise IngestError("Empty file")
@@ -69,12 +77,13 @@ class DocumentService:
         doc_id = str(uuid.uuid4())
         ns = namespace or settings.pinecone_namespace or "default"
         safe_name = Path(filename).name.replace(" ", "_")
-        storage_key = f"company/{doc_id}/original/{safe_name}"
+        storage_key = f"company/{tenant_id or 'platform'}/{doc_id}/original/{safe_name}"
 
         self.storage.put_bytes(storage_key, data, content_type=content_type)
 
         doc = Document(
             id=doc_id,
+            tenant_id=tenant_id,
             filename=safe_name,
             content_type=content_type,
             size_bytes=len(data),
@@ -164,6 +173,7 @@ class DocumentService:
             self.db.add(
                 UsageEvent(
                     event_type="ingest",
+                    tenant_id=doc.tenant_id,
                     user_name=doc.uploaded_by,
                     document_id=doc.id,
                     latency_ms=None,

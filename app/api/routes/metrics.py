@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, Depends, Query
 
-from app.core.security import Principal, require_roles
+from app.core.security import Principal, require_platform_admin, require_scopes
 from app.models.schemas import MetricsSummaryResponse
 from app.services.cache_service import cache_service
 from app.services.metrics_store import metrics_store
@@ -12,7 +12,7 @@ router = APIRouter(tags=["metrics"])
 
 @router.get("/metrics/summary", response_model=MetricsSummaryResponse)
 def metrics_summary(
-    principal: Principal = Depends(require_roles("admin", "user")),
+    principal: Principal = Depends(require_scopes("query:read")),
 ) -> MetricsSummaryResponse:
     """Aggregated p50/p95 and stage shares for Monitor tab."""
     _ = principal
@@ -24,7 +24,7 @@ def metrics_summary(
 @router.get("/metrics/queries")
 def metrics_queries(
     limit: int = Query(default=40, ge=1, le=200),
-    principal: Principal = Depends(require_roles("admin", "user")),
+    principal: Principal = Depends(require_scopes("query:read")),
 ) -> dict:
     """Recent query timing events for charts."""
     _ = principal
@@ -33,7 +33,7 @@ def metrics_queries(
 
 @router.delete("/metrics")
 def metrics_clear(
-    principal: Principal = Depends(require_roles("admin")),
+    principal: Principal = Depends(require_platform_admin()),
 ) -> dict:
     """Clear in-memory metrics (admin)."""
     _ = principal

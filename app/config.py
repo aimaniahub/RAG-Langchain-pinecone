@@ -106,6 +106,13 @@ class Settings(BaseSettings):
     rerank_skip_score: float = 0.85
     streaming_enabled: bool = True
 
+    # Product mode (API platform for other companies)
+    product_mode: str = "api_platform"  # api_platform | full_demo
+    enable_chat_ui: bool = False
+    enable_dev_ui: bool = False
+    enable_admin_ui: bool = True
+    allow_tenant_model_override: bool = True
+
     # Logging / UI
     log_format: str = "text"
     log_level: str = "INFO"

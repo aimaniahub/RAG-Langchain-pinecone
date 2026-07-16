@@ -1,4 +1,4 @@
-"""Document ingest routes (admin when auth enabled)."""
+"""Public ingest endpoints (tenant-scoped via API key scopes)."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from app.core.audit import audit
 from app.core.exceptions import AppError, IngestError, NotConfiguredError, UpstreamError
 from app.core.logging import get_logger
 from app.core.rate_limit import rate_limit_dependency
-from app.core.security import Principal, require_roles
+from app.core.security import Principal, require_scopes
 from app.models.schemas import IngestRequest, IngestResponse
 from app.services.ingest_service import IngestService
 
@@ -38,36 +38,32 @@ def _map_error(exc: Exception) -> HTTPException:
 def ingest_documents(
     body: IngestRequest,
     request: Request,
-    principal: Principal = Depends(require_roles("admin")),
+    principal: Principal = Depends(require_scopes("ingest:write")),
     _: None = Depends(rate_limit_dependency("ingest")),
     service: IngestService = Depends(get_ingest_service),
 ) -> IngestResponse:
-    """Ingest inline texts and/or local file paths (.txt, .md, .pdf)."""
+    """Ingest texts into the caller's tenant namespace."""
+    data = body.model_dump()
+    data["namespace"] = principal.namespace
+    body = IngestRequest(**data)
     logger.info(
-        "POST /ingest actor=%s texts=%s paths=%s",
+        "POST /ingest actor=%s tenant=%s texts=%s",
         principal.key_name,
+        principal.tenant_id,
         len(body.texts or []),
-        len(body.file_paths or []),
     )
     try:
         result = service.ingest(body)
         audit(
             "ingest.completed",
             actor=principal.key_name,
-            role=principal.role,
+            tenant=principal.tenant_id,
             documents=result.documents_received,
-            chunks=result.chunks_created,
             vectors=result.vectors_upserted,
             request_id=getattr(request.state, "request_id", None),
         )
         return result
     except Exception as exc:  # noqa: BLE001
-        audit(
-            "ingest.failed",
-            actor=principal.key_name,
-            error=str(exc)[:200],
-            request_id=getattr(request.state, "request_id", None),
-        )
         raise _map_error(exc) from exc
 
 
@@ -75,23 +71,20 @@ def ingest_documents(
 async def ingest_file(
     request: Request,
     file: UploadFile = File(..., description="Upload .txt, .md, or .pdf"),
-    namespace: str | None = Form(default=None),
     metadata_json: str | None = Form(default=None),
-    principal: Principal = Depends(require_roles("admin")),
+    principal: Principal = Depends(require_scopes("ingest:write")),
     _: None = Depends(rate_limit_dependency("ingest")),
     service: IngestService = Depends(get_ingest_service),
 ) -> IngestResponse:
-    """Multipart file upload ingest."""
+    """Multipart file ingest into tenant namespace."""
     filename = file.filename or "upload.bin"
-    logger.info("POST /ingest/file actor=%s name=%s", principal.key_name, filename)
     meta: dict[str, Any] = {}
     if metadata_json:
         try:
             parsed = json.loads(metadata_json)
-            if not isinstance(parsed, dict):
-                raise ValueError("metadata_json must be a JSON object")
-            meta = parsed
-        except (json.JSONDecodeError, ValueError) as exc:
+            if isinstance(parsed, dict):
+                meta = parsed
+        except json.JSONDecodeError as exc:
             raise HTTPException(status_code=400, detail=f"Invalid metadata_json: {exc}") from exc
 
     data = await file.read()
@@ -108,11 +101,12 @@ async def ingest_file(
             filename=filename,
             data=data,
             metadata=meta,
-            namespace=namespace,
+            namespace=principal.namespace,
         )
         audit(
             "ingest.file.completed",
             actor=principal.key_name,
+            tenant=principal.tenant_id,
             filename=filename,
             vectors=result.vectors_upserted,
             request_id=getattr(request.state, "request_id", None),

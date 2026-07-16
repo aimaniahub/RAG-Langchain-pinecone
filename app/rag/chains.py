@@ -13,7 +13,7 @@ from app.rag.prompts import format_qa_prompt, get_system_prompt
 logger = get_logger("rag.chains")
 
 
-def build_llm() -> Any:
+def build_llm(model: str | None = None) -> Any:
     """Build ChatOpenAI pointed at OpenRouter."""
     if not settings.is_openrouter_configured:
         raise NotConfiguredError("OpenRouter")
@@ -21,7 +21,7 @@ def build_llm() -> Any:
     from langchain_openai import ChatOpenAI
 
     return ChatOpenAI(
-        model=settings.openrouter_model,
+        model=model or settings.openrouter_model,
         api_key=settings.openrouter_api_key,
         base_url=settings.openrouter_base_url,
         temperature=settings.llm_temperature,
@@ -70,7 +70,7 @@ def _content_to_text(content: Any) -> str:
     return str(content).strip() if content is not None else ""
 
 
-def run_qa(question: str, context: str) -> str:
+def run_qa(question: str, context: str, model: str | None = None) -> str:
     """Invoke OpenRouter with grounded context; return answer text."""
     if not context.strip():
         return (
@@ -78,7 +78,7 @@ def run_qa(question: str, context: str) -> str:
             "for this question."
         )
 
-    llm = build_llm()
+    llm = build_llm(model=model)
     messages = _messages(question, context)
 
     attempts = max(1, settings.openrouter_max_retries + 1)
@@ -117,7 +117,7 @@ def run_qa(question: str, context: str) -> str:
     )
 
 
-def stream_qa(question: str, context: str):
+def stream_qa(question: str, context: str, model: str | None = None):
     """Yield text chunks from OpenRouter streaming response."""
     if not context.strip():
         yield (
@@ -126,7 +126,7 @@ def stream_qa(question: str, context: str):
         )
         return
 
-    llm = build_llm()
+    llm = build_llm(model=model)
     messages = _messages(question, context)
     try:
         for chunk in llm.stream(messages):

@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.core.security import Principal, require_roles
+from app.core.security import Principal, require_platform_admin
 from app.db.session import check_db, get_db
 from app.services.usage_service import UsageService
 from app.storage.s3_client import get_storage
@@ -16,7 +16,7 @@ router = APIRouter(tags=["admin"])
 
 @router.get("/admin/dashboard")
 def dashboard(
-    principal: Principal = Depends(require_roles("admin")),
+    principal: Principal = Depends(require_platform_admin()),
     db: Session = Depends(get_db),
 ) -> dict:
     _ = principal
@@ -51,7 +51,7 @@ def dashboard(
 @router.get("/admin/usage/events")
 def usage_events(
     limit: int = 50,
-    principal: Principal = Depends(require_roles("admin")),
+    principal: Principal = Depends(require_platform_admin()),
     db: Session = Depends(get_db),
 ) -> dict:
     _ = principal

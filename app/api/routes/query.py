@@ -1,4 +1,4 @@
-"""RAG query routes + streaming (S0/S1)."""
+"""Public RAG query endpoints (tenant-scoped via API key)."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import json
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from sqlalchemy.orm import Session
 
 from app.api.deps import get_rag_service
 from app.config import settings
@@ -13,7 +14,9 @@ from app.core.audit import audit
 from app.core.exceptions import AppError, NotConfiguredError, QueryError, UpstreamError
 from app.core.logging import get_logger
 from app.core.rate_limit import rate_limit_dependency
-from app.core.security import Principal, require_roles
+from app.core.security import Principal, require_scopes
+from app.db.models import UsageEvent
+from app.db.session import get_db
 from app.models.schemas import QueryRequest, QueryResponse
 from app.services.rag_service import RAGService
 
@@ -42,29 +45,55 @@ def _validate_question(body: QueryRequest) -> None:
         )
 
 
+def _apply_tenant(body: QueryRequest, principal: Principal) -> QueryRequest:
+    """Force namespace from API key tenant (clients cannot escape isolation)."""
+    data = body.model_dump()
+    data["namespace"] = principal.namespace
+    return QueryRequest(**data)
+
+
 @router.post("/query", response_model=QueryResponse)
 def query_rag(
     body: QueryRequest,
     request: Request,
-    principal: Principal = Depends(require_roles("admin", "user")),
+    principal: Principal = Depends(require_scopes("query:read")),
     _: None = Depends(rate_limit_dependency("query")),
     service: RAGService = Depends(get_rag_service),
+    db: Session = Depends(get_db),
 ) -> QueryResponse:
-    """Answer via RAG with timings, cache, rerank, compressed context."""
+    """Tenant-scoped RAG query for client company integrations."""
     _validate_question(body)
+    body = _apply_tenant(body, principal)
     logger.info(
-        "POST /query actor=%s question_len=%s",
+        "POST /query actor=%s tenant=%s ns=%s",
         principal.key_name,
-        len(body.question),
+        principal.tenant_id,
+        principal.namespace,
     )
     try:
-        result = service.query(body)
+        result = service.query(
+            body,
+            model_override=principal.openrouter_model,
+        )
+        db.add(
+            UsageEvent(
+                event_type="query",
+                tenant_id=principal.tenant_id,
+                api_key_id=principal.api_key_db_id,
+                user_name=principal.key_name,
+                latency_ms=(result.timings_ms or {}).get("total"),
+                lag_stage=result.lag_stage,
+                cache_hit=result.cache_hit,
+                context_tokens_est=result.context_tokens_est,
+                model=result.model,
+            )
+        )
+        db.commit()
         audit(
             "query.completed",
             actor=principal.key_name,
-            role=principal.role,
+            tenant=principal.tenant_id,
             sources=len(result.sources),
-            question_len=len(body.question),
             lag=result.lag_stage,
             total_ms=(result.timings_ms or {}).get("total"),
             request_id=getattr(request.state, "request_id", None),
@@ -84,20 +113,22 @@ def query_rag(
 def query_rag_stream(
     body: QueryRequest,
     request: Request,
-    principal: Principal = Depends(require_roles("admin", "user")),
+    principal: Principal = Depends(require_scopes("query:read")),
     _: None = Depends(rate_limit_dependency("query")),
     service: RAGService = Depends(get_rag_service),
 ) -> StreamingResponse:
-    """SSE stream: stage timings + tokens + final JSON."""
+    """SSE stream (feature-flagged). Namespace forced from API key."""
     _validate_question(body)
+    body = _apply_tenant(body, principal)
     if not settings.streaming_enabled:
         raise HTTPException(status_code=400, detail="Streaming disabled")
 
     def event_gen():
         try:
+            # stream path still uses default model in stream_query; patch request ns only
             for item in service.stream_query(body):
                 yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
-            yield "data: {\"event\":\"done\"}\n\n"
+            yield 'data: {"event":"done"}\n\n'
         except Exception as exc:  # noqa: BLE001
             err = {"event": "error", "message": str(exc)}
             yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
@@ -105,8 +136,5 @@ def query_rag_stream(
     return StreamingResponse(
         event_gen(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

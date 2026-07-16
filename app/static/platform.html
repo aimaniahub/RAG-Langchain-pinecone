@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RAG API Platform — Admin</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  <style>
+    .layout { display: grid; grid-template-columns: 220px 1fr; min-height: 100vh; }
+    .nav { border-right: 1px solid var(--border); padding: 16px; background: #0c1222; }
+    .nav button { display: block; width: 100%; text-align: left; margin: 6px 0; }
+    .nav button.active { background: rgba(91,140,255,.2); border-color: rgba(91,140,255,.5); }
+    .content { padding: 20px; max-width: 1100px; }
+    .panel { display: none; }
+    .panel.active { display: block; }
+    .key-once { background: #1a2a1a; border: 1px solid #3ecf8e; color: #b8f5d0; padding: 12px; border-radius: 10px; font-family: var(--mono); word-break: break-all; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: end; margin: 10px 0; }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <aside class="nav">
+      <div class="brand" style="margin-bottom:16px">
+        <strong>RAG API Platform</strong>
+        <div class="subtitle" style="font-size:.8rem;color:var(--muted)">Operator control plane</div>
+      </div>
+      <button type="button" class="btn ghost active" data-panel="system">System</button>
+      <button type="button" class="btn ghost" data-panel="tenants">Tenants</button>
+      <button type="button" class="btn ghost" data-panel="keys">API Keys</button>
+      <button type="button" class="btn ghost" data-panel="models">Models</button>
+      <button type="button" class="btn ghost" data-panel="docs">Documents</button>
+      <button type="button" class="btn ghost" data-panel="usage">Usage</button>
+      <div style="margin-top:24px">
+        <label class="field"><span>Admin API key</span>
+          <input id="apiKey" type="password" placeholder="dev-admin-key / bootstrap" />
+        </label>
+        <button type="button" class="btn primary full" id="btnRefresh" style="margin-top:8px;width:100%">Refresh</button>
+      </div>
+      <p style="font-size:.75rem;color:var(--muted);margin-top:16px">
+        This service is an <strong>API backend</strong>. Client companies use keys + endpoints.
+      </p>
+    </aside>
+    <main class="content">
+      <div id="panel-system" class="panel active">
+        <h2>System</h2>
+        <pre id="sysHealth" class="code-block">—</pre>
+        <pre id="sysConfig" class="code-block muted">—</pre>
+      </div>
+
+      <div id="panel-tenants" class="panel">
+        <h2>Tenants (companies)</h2>
+        <div class="card">
+          <div class="row">
+            <label class="field"><span>Name</span><input id="tName" placeholder="Acme Corp" /></label>
+            <label class="field"><span>Slug (optional)</span><input id="tSlug" placeholder="acme" /></label>
+            <label class="field"><span>Model</span><input id="tModel" placeholder="openai/gpt-4o-mini" /></label>
+            <button type="button" class="btn primary" id="btnCreateTenant">Create tenant</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="metrics-table" id="tenantsTable">
+            <thead><tr><th>Name</th><th>Slug</th><th>Namespace</th><th>Model</th><th>Status</th><th>ID</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div id="panel-keys" class="panel">
+        <h2>API Keys</h2>
+        <div class="card">
+          <div class="row">
+            <label class="field"><span>Tenant ID</span><input id="kTenant" placeholder="uuid from tenants" /></label>
+            <label class="field"><span>Key name</span><input id="kName" value="prod" /></label>
+            <label class="field"><span>Scopes</span><input id="kScopes" value="query:read,ingest:write,docs:read" style="min-width:260px" /></label>
+            <button type="button" class="btn primary" id="btnCreateKey">Issue tenant key</button>
+            <button type="button" class="btn ghost" id="btnCreatePlatformKey">Issue platform admin key</button>
+          </div>
+          <div id="keyOnce" class="key-once hidden"></div>
+        </div>
+        <div class="table-wrap">
+          <table class="metrics-table" id="keysTable">
+            <thead><tr><th>Name</th><th>Prefix</th><th>Role</th><th>Tenant</th><th>Scopes</th><th>Status</th><th></th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div id="panel-models" class="panel">
+        <h2>Models</h2>
+        <div class="card row">
+          <label class="field"><span>Set platform default model_id</span>
+            <input id="mDefault" placeholder="openai/gpt-4o-mini" />
+          </label>
+          <button type="button" class="btn primary" id="btnSetDefault">Set default</button>
+        </div>
+        <div class="card row">
+          <label class="field"><span>Tenant ID</span><input id="mTenant" /></label>
+          <label class="field"><span>Tenant model override</span><input id="mTenantModel" /></label>
+          <button type="button" class="btn ghost" id="btnTenantModel">Apply to tenant</button>
+        </div>
+        <pre id="modelsOut" class="code-block">—</pre>
+      </div>
+
+      <div id="panel-docs" class="panel">
+        <h2>Documents</h2>
+        <div class="card row">
+          <label class="field"><span>Tenant ID (upload for tenant)</span><input id="dTenant" /></label>
+          <label class="field"><span>File</span><input id="dFile" type="file" accept=".txt,.md,.pdf" /></label>
+          <button type="button" class="btn primary" id="btnUploadDoc">Upload &amp; embed</button>
+        </div>
+        <div class="table-wrap">
+          <table class="metrics-table" id="docsTable">
+            <thead><tr><th>File</th><th>Tenant</th><th>Status</th><th>Vectors</th><th>NS</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div id="panel-usage" class="panel">
+        <h2>Usage</h2>
+        <pre id="usageOut" class="code-block">—</pre>
+      </div>
+    </main>
+  </div>
+  <script src="/static/platform.js"></script>
+</body>
+</html>

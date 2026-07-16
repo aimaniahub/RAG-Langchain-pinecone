@@ -1,12 +1,12 @@
-"""FastAPI entrypoint — Railway-ready Company RAG.
+"""RAG API Platform — multi-tenant backend for company integrations.
 
-UIs:
-  /chat   — persistent chat
-  /admin  — documents, usage, monitors
-  /ui     — legacy speed console
+Product: HTTP API + optional operator Admin UI.
+Clients call endpoints with API keys (not a chat app).
 
-Run:
-  uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+  GET  /                 service descriptor
+  GET  /docs             OpenAPI
+  *    /api/v1/*         public + admin APIs
+  GET  /admin            operator console (if enabled)
 """
 
 from collections.abc import AsyncIterator
@@ -15,11 +15,11 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.middleware import RequestContextMiddleware
-from app.api.routes import admin, chat, documents, health, ingest, metrics, query
+from app.api.routes import admin, chat, documents, health, ingest, metrics, platform, query
 from app.config import get_settings, settings
 from app.core.exceptions import AppError, NotConfiguredError, UpstreamError
 from app.core.logging import setup_logging
@@ -49,24 +49,28 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
     if live.auto_migrate:
         try:
-            from app.db.session import init_db
+            from app.db.session import get_session_factory, init_db
 
             init_db()
+            db = get_session_factory()()
+            try:
+                from app.services.platform_service import PlatformService
+
+                PlatformService(db).ensure_default_models()
+            finally:
+                db.close()
         except Exception as exc:  # noqa: BLE001
             logger.error("DB init failed: %s", exc)
             if live.is_production:
                 raise
 
     logger.info(
-        "Starting %s env=%s phase=%s auth=%s db=%s storage=%s openrouter=%s pinecone=%s",
+        "Starting %s mode=%s auth=%s chat_ui=%s admin_ui=%s",
         live.app_name,
-        live.app_env,
-        live.phase,
+        live.product_mode,
         live.auth_enabled,
-        live.database_url.split(":")[0],
-        live.storage_backend,
-        live.is_openrouter_configured,
-        live.is_pinecone_configured,
+        live.enable_chat_ui,
+        live.enable_admin_ui,
     )
 
     if live.warmup_embeddings:
@@ -86,10 +90,11 @@ def create_app() -> FastAPI:
     application = FastAPI(
         title=settings.app_name,
         description=(
-            "Company RAG — Railway production path. "
-            "Postgres · S3/local storage · chat · admin · Pinecone · OpenRouter"
+            "Multi-tenant RAG API platform. "
+            "Integrate with X-API-Key. "
+            "Admin: tenants, keys, models, documents, usage."
         ),
-        version="0.4.0",
+        version="1.0.0",
         lifespan=lifespan,
         docs_url=settings.docs_url,
         redoc_url=settings.redoc_url,
@@ -102,7 +107,7 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
-        expose_headers=["X-Request-ID"],
+        expose_headers=["X-Request-ID", "X-RateLimit-Limit", "X-RateLimit-Remaining"],
     )
 
     def _err(status: int, message: str, request: Request) -> JSONResponse:
@@ -127,56 +132,75 @@ def create_app() -> FastAPI:
 
     prefix = settings.api_prefix.rstrip("/") or "/api/v1"
     application.include_router(health.router, prefix=prefix)
-    application.include_router(ingest.router, prefix=prefix)
     application.include_router(query.router, prefix=prefix)
-    application.include_router(metrics.router, prefix=prefix)
+    application.include_router(ingest.router, prefix=prefix)
     application.include_router(documents.router, prefix=prefix)
-    application.include_router(chat.router, prefix=prefix)
+    application.include_router(platform.router, prefix=prefix)
     application.include_router(admin.router, prefix=prefix)
+    application.include_router(metrics.router, prefix=prefix)
 
+    # Optional chat API (not primary product)
+    if settings.enable_chat_ui or settings.product_mode == "full_demo":
+        application.include_router(chat.router, prefix=prefix)
+
+    # Static / optional UIs
     if settings.ui_enabled and STATIC_DIR.is_dir():
         application.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
-        @application.get("/chat", include_in_schema=False)
-        def chat_page() -> FileResponse:
-            return FileResponse(STATIC_DIR / "chat.html")
+        if settings.enable_admin_ui:
 
-        @application.get("/admin", include_in_schema=False)
-        def admin_page() -> FileResponse:
-            return FileResponse(STATIC_DIR / "admin.html")
+            @application.get("/admin", include_in_schema=False)
+            def admin_page() -> FileResponse:
+                return FileResponse(STATIC_DIR / "platform.html")
 
-        @application.get("/ui", include_in_schema=False)
-        def ui_page() -> FileResponse:
-            return FileResponse(STATIC_DIR / "index.html")
+        if settings.enable_chat_ui or settings.product_mode == "full_demo":
 
-        @application.get("/", include_in_schema=False)
-        def root_redirect() -> RedirectResponse:
-            return RedirectResponse(url="/chat")
+            @application.get("/chat", include_in_schema=False)
+            def chat_page() -> FileResponse:
+                return FileResponse(STATIC_DIR / "chat.html")
 
-    else:
+        if settings.enable_dev_ui or settings.product_mode == "full_demo":
 
-        @application.get("/")
-        def root() -> dict:
-            return {
-                "app": settings.app_name,
-                "phase": settings.phase,
-                "health": f"{prefix}/health",
-            }
+            @application.get("/ui", include_in_schema=False)
+            def ui_page() -> FileResponse:
+                return FileResponse(STATIC_DIR / "index.html")
+
+    @application.get("/", include_in_schema=False)
+    def root() -> dict:
+        return {
+            "service": settings.app_name,
+            "product": "rag-api-platform",
+            "version": "1.0.0",
+            "mode": settings.product_mode,
+            "message": "RAG API backend. Integrate with API keys and HTTP endpoints.",
+            "docs": settings.docs_url or "disabled",
+            "health": f"{prefix}/health",
+            "ready": f"{prefix}/ready",
+            "endpoints": {
+                "query": f"POST {prefix}/query",
+                "ingest_text": f"POST {prefix}/ingest",
+                "ingest_file": f"POST {prefix}/ingest/file",
+                "documents": f"GET/POST {prefix}/documents",
+                "admin_tenants": f"{prefix}/admin/tenants",
+                "admin_keys": f"{prefix}/admin/keys",
+                "admin_models": f"{prefix}/admin/models",
+            },
+            "auth": {
+                "header": "X-API-Key: <key>",
+                "or": "Authorization: Bearer <key>",
+                "enabled": settings.auth_enabled,
+            },
+            "admin_ui": "/admin" if settings.enable_admin_ui else None,
+        }
 
     @application.get("/api")
     def api_info() -> dict:
         return {
-            "app": settings.app_name,
-            "phase": settings.phase,
+            "service": settings.app_name,
+            "prefix": prefix,
             "docs": settings.docs_url or "disabled",
             "health": f"{prefix}/health",
-            "ready": f"{prefix}/ready",
-            "chat_ui": "/chat",
-            "admin_ui": "/admin",
-            "dev_ui": "/ui",
-            "auth_enabled": settings.auth_enabled,
-            "storage": settings.storage_backend,
-            "embedding": settings.embedding_model,
+            "product_mode": settings.product_mode,
         }
 
     return application
