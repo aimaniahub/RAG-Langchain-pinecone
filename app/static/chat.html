@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Company RAG — Chat</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/chat.css" />
+</head>
+<body>
+  <div class="chat-app">
+    <aside class="sidebar">
+      <div class="side-brand">
+        <div class="logo">R</div>
+        <div>
+          <strong>Company RAG</strong>
+          <div class="muted">Knowledge chat</div>
+        </div>
+      </div>
+      <button type="button" class="btn primary full" id="btnNew">+ New chat</button>
+      <div class="session-list" id="sessionList"></div>
+      <div class="side-foot">
+        <label class="field">
+          <span>API key</span>
+          <input id="apiKey" type="password" placeholder="dev-admin-key" />
+        </label>
+        <div class="nav-links">
+          <a href="/admin">Admin</a>
+          <a href="/ui">Dev console</a>
+        </div>
+      </div>
+    </aside>
+    <main class="chat-main">
+      <header class="chat-header">
+        <div>
+          <h1 id="chatTitle">Select or start a chat</h1>
+          <p class="muted" id="chatMeta">Answers use company documents (Pinecone + OpenRouter)</p>
+        </div>
+        <span id="statusPill" class="pill pill-muted">…</span>
+      </header>
+      <div class="messages" id="messages"></div>
+      <form class="composer" id="composer">
+        <textarea id="question" rows="2" placeholder="Ask about company policies, docs…"></textarea>
+        <button type="submit" class="btn primary" id="btnSend">Send</button>
+      </form>
+    </main>
+  </div>
+  <script src="/static/chat.js"></script>
+</body>
+</html>

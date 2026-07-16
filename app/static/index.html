@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Company RAG — Console & Monitor</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <div class="brand">
+        <div class="logo">R</div>
+        <div>
+          <h1>Company RAG</h1>
+          <p class="subtitle">S0/S1 speed · timings · rerank · cache · monitor</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <span id="statusPill" class="pill pill-muted">checking…</span>
+        <a class="link" href="/docs" target="_blank" rel="noopener">API docs</a>
+      </div>
+    </header>
+
+    <nav class="main-tabs" id="mainTabs">
+      <button type="button" class="main-tab active" data-main="work">Work</button>
+      <button type="button" class="main-tab" data-main="monitor">Monitor</button>
+    </nav>
+
+    <!-- ========== WORK ========== -->
+    <div id="view-work" class="main-view active">
+      <section class="card settings-card">
+        <div class="card-head">
+          <h2>Connection</h2>
+          <button type="button" class="btn ghost" id="btnRefreshHealth">Refresh health</button>
+        </div>
+        <div class="grid-3">
+          <label class="field">
+            <span>API base</span>
+            <input id="apiBase" type="text" value="/api/v1" />
+          </label>
+          <label class="field">
+            <span>API key <small>(if AUTH_ENABLED)</small></span>
+            <input id="apiKey" type="password" placeholder="dev-admin-key" autocomplete="off" />
+          </label>
+          <label class="field">
+            <span>Namespace</span>
+            <input id="namespace" type="text" value="default" />
+          </label>
+        </div>
+        <pre id="healthOut" class="code-block">Loading readiness…</pre>
+      </section>
+
+      <div class="panels">
+        <section class="card">
+          <div class="card-head">
+            <h2>1 · Ingest</h2>
+            <span class="hint">admin when auth on</span>
+          </div>
+          <div class="tabs">
+            <button type="button" class="tab active" data-tab="text">Text</button>
+            <button type="button" class="tab" data-tab="file">File</button>
+          </div>
+          <div id="tab-text" class="tab-panel active">
+            <label class="field">
+              <span>Document text</span>
+              <textarea id="ingestText" rows="8" placeholder="Paste policy text…"></textarea>
+            </label>
+            <label class="field">
+              <span>Metadata JSON</span>
+              <input id="ingestMeta" type="text" value='{"source":"ui-test","department":"HR"}' />
+            </label>
+            <button type="button" class="btn primary" id="btnIngestText">Ingest text</button>
+          </div>
+          <div id="tab-file" class="tab-panel">
+            <label class="field">
+              <span>File (.txt / .md / .pdf)</span>
+              <input id="ingestFile" type="file" accept=".txt,.md,.markdown,.pdf" />
+            </label>
+            <label class="field">
+              <span>Metadata JSON</span>
+              <input id="ingestFileMeta" type="text" value='{"source":"ui-upload"}' />
+            </label>
+            <button type="button" class="btn primary" id="btnIngestFile">Upload &amp; ingest</button>
+          </div>
+          <pre id="ingestOut" class="code-block muted">No ingest yet.</pre>
+        </section>
+
+        <section class="card">
+          <div class="card-head">
+            <h2>2 · Query</h2>
+            <span class="hint">timings + lag stage</span>
+          </div>
+          <label class="field">
+            <span>Question</span>
+            <textarea id="question" rows="4" placeholder="How many paid leave days do employees get?"></textarea>
+          </label>
+          <div class="grid-2">
+            <label class="field">
+              <span>retrieve top_k</span>
+              <input id="topK" type="number" min="1" max="30" value="10" />
+            </label>
+            <div class="field-actions">
+              <button type="button" class="btn primary" id="btnQuery">Ask</button>
+              <button type="button" class="btn ghost" id="btnSampleQ">Sample</button>
+            </div>
+          </div>
+
+          <div id="timingBar" class="timing-bar hidden"></div>
+
+          <div id="answerBox" class="answer-box hidden">
+            <div class="answer-label">Answer</div>
+            <div id="answerText" class="answer-text"></div>
+            <div class="answer-meta" id="answerMeta"></div>
+          </div>
+          <div id="sourcesBox" class="sources hidden">
+            <div class="answer-label">Sources (reranked / compressed)</div>
+            <div id="sourcesList"></div>
+          </div>
+          <pre id="queryOut" class="code-block muted">No query yet.</pre>
+        </section>
+      </div>
+    </div>
+
+    <!-- ========== MONITOR ========== -->
+    <div id="view-monitor" class="main-view">
+      <section class="card">
+        <div class="card-head">
+          <h2>Latency monitor</h2>
+          <div class="row-actions">
+            <button type="button" class="btn ghost" id="btnRefreshMetrics">Refresh</button>
+            <button type="button" class="btn ghost" id="btnClearMetrics">Clear</button>
+          </div>
+        </div>
+        <p class="hint" style="margin-top:0">
+          Where each query lags: <strong>embed</strong>, <strong>retrieve</strong>, <strong>rerank</strong>,
+          <strong>context</strong>, <strong>llm</strong>. Cache hits should show near-zero LLM time.
+        </p>
+        <div class="stat-grid" id="statGrid">
+          <div class="stat"><div class="stat-label">Queries</div><div class="stat-value" id="statCount">0</div></div>
+          <div class="stat"><div class="stat-label">Avg total</div><div class="stat-value" id="statAvg">—</div></div>
+          <div class="stat"><div class="stat-label">p95 total</div><div class="stat-value" id="statP95">—</div></div>
+          <div class="stat"><div class="stat-label">Slowest stage</div><div class="stat-value" id="statLag">—</div></div>
+        </div>
+      </section>
+
+      <div class="panels">
+        <section class="card">
+          <h2 class="card-title">Avg stage time (ms)</h2>
+          <canvas id="chartStages" height="220"></canvas>
+        </section>
+        <section class="card">
+          <h2 class="card-title">Share of total latency (%)</h2>
+          <canvas id="chartShare" height="220"></canvas>
+        </section>
+      </div>
+
+      <div class="panels">
+        <section class="card">
+          <h2 class="card-title">Recent totals (last N)</h2>
+          <canvas id="chartRecent" height="220"></canvas>
+        </section>
+        <section class="card">
+          <h2 class="card-title">Cache hits</h2>
+          <canvas id="chartCache" height="220"></canvas>
+          <pre id="cacheStats" class="code-block muted">—</pre>
+        </section>
+      </div>
+
+      <section class="card">
+        <h2 class="card-title">Recent queries</h2>
+        <div class="table-wrap">
+          <table class="metrics-table" id="metricsTable">
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Question</th>
+                <th>Total</th>
+                <th>Embed</th>
+                <th>Retrieve</th>
+                <th>Rerank</th>
+                <th>Context</th>
+                <th>LLM</th>
+                <th>Lag</th>
+                <th>Cache</th>
+                <th>Ctx chars</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
+    <footer class="footer">
+      <span>Retrieve-k → rerank → top-N compress → LLM · monitor lag stages</span>
+      <span id="footerPhase">phase 3</span>
+    </footer>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

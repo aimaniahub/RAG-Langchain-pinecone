@@ -1,0 +1,17 @@
+# Railway deployment config
+# Plugins to add in the Railway dashboard (same project):
+#   1) PostgreSQL  → set DATABASE_URL = ${{Postgres.DATABASE_URL}}
+#   2) Optional: Object Storage / S3-compatible bucket for uploads
+#   3) Variables: OPENROUTER_*, PINECONE_*, AUTH_*, S3_* (see .env.example)
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+# Railway probes this path on $PORT after deploy
+healthcheckPath = "/api/v1/health"
+# HF model download / first boot can be slow
+healthcheckTimeout = 300
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5

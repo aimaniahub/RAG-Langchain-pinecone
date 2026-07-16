@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Company RAG — Admin</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <div class="brand">
+        <div class="logo">A</div>
+        <div>
+          <h1>Admin console</h1>
+          <p class="subtitle">Documents · usage · monitors · Railway-ready</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <span id="statusPill" class="pill pill-muted">…</span>
+        <a class="link" href="/chat">Chat</a>
+        <a class="link" href="/ui">Dev UI</a>
+      </div>
+    </header>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>Connection</h2>
+        <button type="button" class="btn ghost" id="btnRefresh">Refresh all</button>
+      </div>
+      <div class="grid-3">
+        <label class="field">
+          <span>API key (admin)</span>
+          <input id="apiKey" type="password" placeholder="dev-admin-key" />
+        </label>
+        <label class="field">
+          <span>Namespace</span>
+          <input id="namespace" type="text" value="default" />
+        </label>
+        <div class="field">
+          <span>Integrations</span>
+          <pre id="integrations" class="code-block muted" style="margin:0;max-height:80px">—</pre>
+        </div>
+      </div>
+    </section>
+
+    <div class="stat-grid" id="statGrid">
+      <div class="stat"><div class="stat-label">Queries</div><div class="stat-value" id="sQueries">0</div></div>
+      <div class="stat"><div class="stat-label">Ingests</div><div class="stat-value" id="sIngests">0</div></div>
+      <div class="stat"><div class="stat-label">Docs ready</div><div class="stat-value" id="sDocs">0</div></div>
+      <div class="stat"><div class="stat-label">Avg latency</div><div class="stat-value" id="sAvg">—</div></div>
+      <div class="stat"><div class="stat-label">Sessions</div><div class="stat-value" id="sSessions">0</div></div>
+      <div class="stat"><div class="stat-label">Messages</div><div class="stat-value" id="sMessages">0</div></div>
+      <div class="stat"><div class="stat-label">Failed docs</div><div class="stat-value" id="sFailed">0</div></div>
+      <div class="stat"><div class="stat-label">Top lag</div><div class="stat-value" id="sLag">—</div></div>
+    </div>
+
+    <div class="panels" style="margin-top:16px">
+      <section class="card">
+        <h2 class="card-title">Upload company document</h2>
+        <p class="hint">Auto: S3/local storage → chunk → embed → Pinecone</p>
+        <label class="field">
+          <span>File (.txt, .md, .pdf)</span>
+          <input id="file" type="file" accept=".txt,.md,.markdown,.pdf" />
+        </label>
+        <label class="field" style="margin-top:8px">
+          <span><input type="checkbox" id="asyncProcess" /> process in background</span>
+        </label>
+        <button type="button" class="btn primary" id="btnUpload" style="margin-top:10px">Upload &amp; embed</button>
+        <pre id="uploadOut" class="code-block muted">No upload yet.</pre>
+      </section>
+      <section class="card">
+        <h2 class="card-title">Live stage averages (ms)</h2>
+        <canvas id="chartStages" height="220"></canvas>
+      </section>
+    </div>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>Documents</h2>
+      </div>
+      <div class="table-wrap">
+        <table class="metrics-table" id="docsTable">
+          <thead>
+            <tr>
+              <th>Filename</th>
+              <th>Status</th>
+              <th>Chunks</th>
+              <th>Vectors</th>
+              <th>Size</th>
+              <th>Backend</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2 class="card-title">Recent usage events</h2>
+      <div class="table-wrap">
+        <table class="metrics-table" id="eventsTable">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Type</th>
+              <th>User</th>
+              <th>Latency</th>
+              <th>Lag</th>
+              <th>Cache</th>
+              <th>Model</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+  <script src="/static/admin.js"></script>
+</body>
+</html>

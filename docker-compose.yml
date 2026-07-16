@@ -1,0 +1,60 @@
+# Local multi-service parity with Railway (app + Postgres)
+# Usage: docker compose up --build
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: rag
+      POSTGRES_PASSWORD: rag
+      POSTGRES_DB: company_rag
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rag -d company_rag"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  rag-api:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      PORT: "8000"
+      APP_ENV: production
+      APP_DEBUG: "false"
+      AUTO_MIGRATE: "true"
+      AUTH_ENABLED: "true"
+      UI_ENABLED: "true"
+      LOG_FORMAT: json
+      HF_HOME: /models/hf
+      DATABASE_URL: postgresql://rag:rag@postgres:5432/company_rag
+    volumes:
+      - hf_cache:/models/hf
+      - uploads:/app/data/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health')",
+        ]
+      interval: 30s
+      timeout: 10s
+      start_period: 180s
+      retries: 5
+
+volumes:
+  pgdata:
+  hf_cache:
+  uploads:
