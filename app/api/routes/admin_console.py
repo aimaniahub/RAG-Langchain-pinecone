@@ -35,6 +35,11 @@ def _user_dict(u: User) -> dict:
 
 
 def _tenant_dict(t) -> dict:
+    def _bool01(v):
+        if v is None:
+            return None
+        return bool(v)
+
     return {
         "id": t.id,
         "name": t.name,
@@ -44,6 +49,17 @@ def _tenant_dict(t) -> dict:
         "default_model": t.default_model,
         "rate_limit_rpm": t.rate_limit_rpm,
         "notes": t.notes,
+        "system_prompt": getattr(t, "system_prompt", None),
+        "top_k": getattr(t, "top_k", None),
+        "return_top_n": getattr(t, "return_top_n", None),
+        "max_context_chars": getattr(t, "max_context_chars", None),
+        "max_question_chars": getattr(t, "max_question_chars", None),
+        "max_chars_per_chunk": getattr(t, "max_chars_per_chunk", None),
+        "temperature": getattr(t, "temperature", None),
+        "min_retrieval_score": getattr(t, "min_retrieval_score", None),
+        "rerank_enabled": _bool01(getattr(t, "rerank_enabled", None)),
+        "answer_cache_enabled": _bool01(getattr(t, "answer_cache_enabled", None)),
+        "no_context_message": getattr(t, "no_context_message", None),
         "created_at": t.created_at.isoformat() if t.created_at else None,
     }
 
@@ -292,6 +308,18 @@ class UpdateTenantBody(BaseModel):
     default_model: str | None = None
     rate_limit_rpm: int | None = None
     notes: str | None = None
+    # Per-company RAG overrides (null clears override → platform default)
+    system_prompt: str | None = None
+    top_k: int | None = None
+    return_top_n: int | None = None
+    max_context_chars: int | None = None
+    max_question_chars: int | None = None
+    max_chars_per_chunk: int | None = None
+    temperature: float | None = None
+    min_retrieval_score: float | None = None
+    rerank_enabled: bool | None = None
+    answer_cache_enabled: bool | None = None
+    no_context_message: str | None = None
 
 
 @router.get("/admin/tenants")
@@ -344,10 +372,14 @@ def get_tenant(
 ) -> dict:
     _ = principal
     try:
+        from app.models.tenant_config import TenantRagConfig
+
         detail = AdminService(db).tenant_detail(tenant_id)
         t = detail["tenant"]
+        cfg = TenantRagConfig.from_tenant(t)
         return {
             "tenant": _tenant_dict(t),
+            "rag_config": cfg.to_api_dict(),
             "keys": [_key_dict(k) for k in detail["keys"]],
             "documents": [_doc_dict(d) for d in detail["documents"]],
             "members_count": len(detail["members"]),
@@ -370,6 +402,33 @@ def patch_tenant(
             tenant_id, **body.model_dump(exclude_unset=True)
         )
         return {"status": "ok", "tenant": _tenant_dict(t)}
+    except Exception as exc:  # noqa: BLE001
+        raise _err(exc) from exc
+
+
+@router.put("/admin/tenants/{tenant_id}/rag-settings")
+def put_tenant_rag_settings(
+    tenant_id: str,
+    body: UpdateTenantBody,
+    principal: Principal = Depends(require_platform_admin()),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Save per-company RAG settings (system prompt, top_k, token limits, …)."""
+    _ = principal
+    try:
+        from app.models.tenant_config import TenantRagConfig
+
+        payload = body.model_dump(exclude_unset=True)
+        # Never clear name/status via this endpoint accidentally
+        payload.pop("name", None)
+        payload.pop("status", None)
+        t = AdminService(db).update_tenant(tenant_id, **payload)
+        return {
+            "status": "ok",
+            "tenant": _tenant_dict(t),
+            "rag_config": TenantRagConfig.from_tenant(t).to_api_dict(),
+            "message": "Company RAG settings saved.",
+        }
     except Exception as exc:  # noqa: BLE001
         raise _err(exc) from exc
 

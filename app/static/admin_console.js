@@ -5,9 +5,9 @@
 
   const titles = {
     home: ["Home", "Setup checklist — live from Postgres"],
-    companies: ["Companies", "Client companies (tenants). Configure keys, docs, models per company."],
-    test: ["Test API", "Pick a company and chat with a real tenant API key"],
-    system: ["System", "Integrations and platform model defaults"],
+    companies: ["Companies", "Client companies · keys, docs, per-company RAG config"],
+    test: ["Test API", "Chat with a real tenant API key"],
+    system: ["System", "Integrations and platform defaults"],
   };
 
   const state = {
@@ -19,6 +19,7 @@
     selectedId: null,
     desk: null,
     deskTab: "overview",
+    busy: 0,
     testKeys: JSON.parse(sessionStorage.getItem("rag_test_keys") || "{}"),
     testMessages: [],
   };
@@ -28,12 +29,17 @@
     return String(s ?? "")
       .replaceAll("&", "&amp;")
       .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;");
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;");
   }
 
   function cleanKey(v) {
     let s = String(v ?? "").trim();
-    if (s.length >= 2 && ((s[0] === '"' && s[s.length - 1] === '"') || (s[0] === "'" && s[s.length - 1] === "'"))) {
+    if (
+      s.length >= 2 &&
+      ((s[0] === '"' && s[s.length - 1] === '"') ||
+        (s[0] === "'" && s[s.length - 1] === "'"))
+    ) {
       s = s.slice(1, -1).trim();
     }
     return s;
@@ -43,14 +49,9 @@
     if (detail == null || detail === "") return statusText || "Request failed";
     if (typeof detail === "string") return detail;
     if (Array.isArray(detail)) {
-      return detail
-        .map((x) => (typeof x === "string" ? x : x.msg || JSON.stringify(x)))
-        .join("; ");
+      return detail.map((x) => (typeof x === "string" ? x : x.msg || JSON.stringify(x))).join("; ");
     }
-    if (typeof detail === "object") {
-      if (detail.message) return detail.message;
-      return JSON.stringify(detail);
-    }
+    if (typeof detail === "object") return detail.message || JSON.stringify(detail);
     return String(detail);
   }
 
@@ -62,27 +63,50 @@
     return h;
   }
 
-  async function req(path, opts = {}) {
-    const r = await fetch(api + path, opts);
-    const d = await r.json().catch(() => ({}));
-    if (!r.ok) {
-      throw new Error(formatError(d.detail || d.message, r.statusText));
+  function setGlobalLoading(on) {
+    $("globalLoad").classList.toggle("on", !!on);
+  }
+
+  function pushBusy(delta) {
+    state.busy = Math.max(0, state.busy + delta);
+    setGlobalLoading(state.busy > 0);
+  }
+
+  function setBtnLoading(btn, loading, label) {
+    if (!btn) return;
+    const span = btn.querySelector(".btn-label") || btn;
+    if (loading) {
+      btn.disabled = true;
+      btn.dataset.prev = span.textContent || "";
+      span.innerHTML = `<span class="spin"></span> ${esc(label || "Working…")}`;
+    } else {
+      btn.disabled = false;
+      if (btn.dataset.prev != null) span.textContent = btn.dataset.prev;
     }
-    return d;
   }
 
-  function baseUrl() {
-    const fromEnv = (state.config?.public_base_url || state.setup?.public_base_url || "").trim();
-    return (fromEnv || window.location.origin).replace(/\/$/, "");
+  async function req(path, opts = {}) {
+    pushBusy(1);
+    try {
+      const r = await fetch(api + path, opts);
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(formatError(d.detail || d.message, r.statusText));
+      return d;
+    } finally {
+      pushBusy(-1);
+    }
   }
 
-  function apiPrefix() {
-    return state.config?.api_prefix || state.setup?.api_prefix || "/api/v1";
+  function flash(msg, ok = true) {
+    const strip = $("toastStrip");
+    const el = document.createElement("div");
+    el.className = "toast-item " + (ok ? "ok" : "err");
+    el.textContent = msg;
+    strip.appendChild(el);
+    setTimeout(() => el.remove(), 3200);
   }
 
-  // ── Dialogs ──
   let dlgResolve = null;
-
   function closeDialog(result) {
     $("modalDialog").classList.add("hidden");
     const r = dlgResolve;
@@ -90,14 +114,11 @@
     if (r) r(result);
   }
 
-  /**
-   * @param {{title:string, message:string, ok?:boolean, secret?:string, confirm?:boolean, confirmLabel?:string, cancelLabel?:string}} opts
-   * @returns {Promise<boolean>}
-   */
   function showDialog(opts) {
     const ok = opts.ok !== false;
-    $("dlgIcon").className = "dlg-icon " + (ok ? "ok" : "err");
-    $("dlgIcon").textContent = ok ? "✓" : "!";
+    const kind = opts.kind || (ok ? "ok" : "err");
+    $("dlgIcon").className = "dlg-icon " + kind;
+    $("dlgIcon").textContent = kind === "ok" ? "✓" : kind === "warn" ? "!" : "!";
     $("dlgTitle").textContent = opts.title || (ok ? "Success" : "Error");
     $("dlgMessage").textContent = opts.message || "";
     const sec = $("dlgSecret");
@@ -111,6 +132,7 @@
           try {
             await navigator.clipboard.writeText(opts.secret);
             btn.textContent = "Copied";
+            flash("Copied to clipboard");
           } catch {
             btn.textContent = "Select text manually";
           }
@@ -141,44 +163,45 @@
     });
   }
 
-  async function notifySuccess(title, message, secret) {
-    await showDialog({ title, message, ok: true, secret });
-  }
-
-  async function notifyError(title, message) {
-    await showDialog({ title: title || "Error", message: message || "Something went wrong", ok: false });
-  }
-
-  async function confirmAction(title, message, confirmLabel) {
-    return showDialog({
+  const notifySuccess = (title, message, secret) =>
+    showDialog({ title, message, ok: true, secret });
+  const notifyError = (title, message) =>
+    showDialog({ title: title || "Error", message: message || "Something went wrong", ok: false });
+  const confirmAction = (title, message, confirmLabel) =>
+    showDialog({
       title,
       message,
       ok: false,
+      kind: "warn",
       confirm: true,
       confirmLabel: confirmLabel || "Confirm",
-      cancelLabel: "Cancel",
     });
-  }
 
   async function copyText(label, value) {
     try {
       await navigator.clipboard.writeText(value);
-      await notifySuccess("Copied", `${label} copied to clipboard.`);
+      flash(`Copied ${label}`);
     } catch {
       await notifyError("Copy failed", "Select the text and copy manually.");
     }
   }
 
-  // ── Auth gate ──
+  function baseUrl() {
+    const fromEnv = (state.config?.public_base_url || state.setup?.public_base_url || "").trim();
+    return (fromEnv || window.location.origin).replace(/\/$/, "");
+  }
+  function apiPrefix() {
+    return state.config?.api_prefix || state.setup?.api_prefix || "/api/v1";
+  }
+
+  // ── Auth ──
   function setConnectedUI(connected) {
     state.connected = connected;
     $("authGate").classList.toggle("hidden", connected);
     $("appShell").classList.toggle("hidden", !connected);
     if (connected) {
       const k = state.adminKey;
-      $("authKeyHint").textContent = k
-        ? `${k.slice(0, 6)}…${k.slice(-4)}`
-        : "(auth disabled / no key)";
+      $("authKeyHint").textContent = k ? `${k.slice(0, 6)}…${k.slice(-4)}` : "(auth off)";
     }
   }
 
@@ -195,35 +218,25 @@
 
   function validateKeyInput(raw) {
     const k = cleanKey(raw);
-    if (!k) {
-      return { ok: false, error: "Admin key is required. Paste API_KEY_ADMIN from your server env." };
-    }
-    if (k.length < 4) {
-      return { ok: false, error: "Key looks too short. Check you pasted the full value." };
-    }
-    if (/\s/.test(k)) {
-      return { ok: false, error: "Key must not contain spaces. Remove quotes/spaces from .env." };
-    }
+    if (!k) return { ok: false, error: "Admin key is required." };
+    if (k.length < 4) return { ok: false, error: "Key looks too short." };
+    if (/\s/.test(k)) return { ok: false, error: "Key must not contain spaces." };
     return { ok: true, key: k };
   }
 
   async function connectWithKey(raw, { silent = false } = {}) {
     const v = validateKeyInput(raw);
-    // When AUTH is off, empty key is allowed
     let key = v.ok ? v.key : cleanKey(raw);
     if (!v.ok && key) {
       showGateError(v.error);
       if (!silent) await notifyError("Invalid key", v.error);
       return false;
     }
-
     state.adminKey = key;
+    const btn = $("gateConnect");
+    if (!silent) setBtnLoading(btn, true, "Connecting…");
     try {
-      // First try verify; if AUTH disabled, empty key works via anonymous principal
       const me = await req("/admin/auth/verify", { headers: headers(false) });
-      if (!me.ok && !me.is_platform_admin) {
-        throw new Error("Key accepted but not platform admin.");
-      }
       localStorage.setItem(STORAGE_KEY, key);
       setConnectedUI(true);
       showGateError("");
@@ -232,21 +245,20 @@
         await notifySuccess(
           "Connected",
           me.auth_enabled === false
-            ? "Auth is disabled on the server (AUTH_ENABLED=false). You have full admin access."
-            : `Admin key accepted (${me.key_name || "admin"} · role ${me.role}).`
+            ? "Auth is disabled on the server. Full admin access granted."
+            : `Admin key accepted (${me.key_name || "admin"}).`
         );
       }
       return true;
     } catch (e) {
       state.connected = false;
       localStorage.removeItem(STORAGE_KEY);
-      const msg =
-        e.message ||
-        "Auth failed. Check API_KEY_ADMIN / BOOTSTRAP_ADMIN_KEY, restart server after env change.";
-      showGateError(msg);
+      showGateError(e.message);
       setConnectedUI(false);
-      if (!silent) await notifyError("Authentication failed", msg);
+      if (!silent) await notifyError("Authentication failed", e.message);
       return false;
+    } finally {
+      if (!silent) setBtnLoading(btn, false);
     }
   }
 
@@ -256,50 +268,19 @@
     inp.type = show ? "text" : "password";
     $("gateToggle").textContent = show ? "Hide" : "Show";
   };
-
-  $("gateConnect").onclick = async () => {
-    const raw = $("gateKey").value;
-    const v = validateKeyInput(raw);
-    // Allow empty only if server has auth off — try anyway with empty
-    if (!v.ok && cleanKey(raw)) {
-      showGateError(v.error);
-      return;
-    }
-    $("gateConnect").disabled = true;
-    $("gateConnect").textContent = "Connecting…";
-    try {
-      await connectWithKey(raw, { silent: false });
-    } finally {
-      $("gateConnect").disabled = false;
-      $("gateConnect").textContent = "Connect";
-    }
-  };
-
+  $("gateConnect").onclick = () => connectWithKey($("gateKey").value);
   $("gateKey").addEventListener("keydown", (ev) => {
     if (ev.key === "Enter") {
       ev.preventDefault();
       $("gateConnect").click();
     }
   });
-
-  $("gateKey").addEventListener("input", () => {
-    showGateError("");
-    const v = validateKeyInput($("gateKey").value);
-    if ($("gateKey").value && !v.ok) {
-      // soft validation while typing — only if non-empty and clearly bad
-      if (cleanKey($("gateKey").value).length >= 1 && /\s/.test(cleanKey($("gateKey").value))) {
-        showGateError(v.error);
-      }
-    }
-  });
-
   $("btnDisconnect").onclick = () => {
     state.adminKey = "";
     state.connected = false;
     localStorage.removeItem(STORAGE_KEY);
     $("gateKey").value = "";
     setConnectedUI(false);
-    showGateError("");
   };
 
   // ── nav ──
@@ -317,7 +298,7 @@
     };
   });
 
-  // ── loaders ──
+  // ── load ──
   async function refresh() {
     if (!state.connected && !state.adminKey) return;
     try {
@@ -333,7 +314,9 @@
       renderCompanies();
       renderSystem();
       renderTestCompanySelect();
-      if (state.selectedId) await openDesk(state.selectedId, false);
+      if (state.selectedId && !$("desk").classList.contains("hidden")) {
+        await openDesk(state.selectedId, false);
+      }
       const integ = state.setup?.integrations || {};
       const ok = integ.database && integ.openrouter && integ.pinecone;
       $("statusPill").className = "pill " + (ok ? "ok" : "warn");
@@ -341,14 +324,13 @@
     } catch (e) {
       $("statusPill").className = "pill err";
       $("statusPill").textContent = "error";
-      const msg = e.message || "Failed to load admin data";
-      if (/invalid api key|missing api key|missing scopes|unauthorized|forbidden/i.test(msg)) {
+      if (/invalid api key|missing api key|missing scopes|unauthorized|forbidden/i.test(e.message)) {
         setConnectedUI(false);
-        showGateError(msg);
-        await notifyError("Session expired", msg + "\n\nRe-enter your platform admin key.");
+        showGateError(e.message);
+        await notifyError("Session expired", e.message);
       } else {
-        $("nextBox").textContent = "Cannot load dashboard: " + msg;
-        await notifyError("Load failed", msg);
+        $("nextBox").textContent = "Cannot load dashboard: " + e.message;
+        flash(e.message, false);
       }
     }
   }
@@ -363,7 +345,8 @@
     const nb = $("nextBox");
     if (setup.setup_complete) {
       nb.className = "next-box done";
-      nb.innerHTML = "<strong>Setup complete.</strong> Use Companies → Configure to manage each client.";
+      nb.innerHTML =
+        "<strong>Setup complete.</strong> Use Companies → Configure for RAG settings.";
     } else if (next) {
       nb.className = "next-box";
       nb.innerHTML = `<strong>Next:</strong> ${esc(next.title)}<br/>${esc(next.hint)}`;
@@ -410,7 +393,8 @@
         <div class="company-meta">
           Namespace: <span class="mono">${esc(t.pinecone_namespace)}</span><br/>
           Model: ${esc(t.default_model || "—")}<br/>
-          Keys: ${t.keys_active ?? 0} · Docs: ${t.documents_ready ?? 0}/${t.documents ?? 0} ready · Queries: ${t.query_count ?? 0}
+          top_k: ${t.top_k ?? "default"} · return: ${t.return_top_n ?? "default"}<br/>
+          Keys: ${t.keys_active ?? 0} · Docs: ${t.documents_ready ?? 0}/${t.documents ?? 0} · Q: ${t.query_count ?? 0}
         </div>
         <div class="company-actions">
           <button type="button" class="btn primary sm" data-cfg="${t.id}">Configure</button>
@@ -431,7 +415,7 @@
     });
   }
 
-  // ── Company desk ──
+  // ── Desk ──
   async function openDesk(id, show = true) {
     state.selectedId = id;
     try {
@@ -445,7 +429,7 @@
         });
       }
       $("deskTitle").textContent = d.tenant.name;
-      $("deskSub").textContent = `${d.tenant.status} · ${d.tenant.slug} · ${d.tenant.id}`;
+      $("deskSub").textContent = `${d.tenant.status} · ${d.tenant.slug}`;
       renderDesk();
     } catch (e) {
       await notifyError("Could not open company", e.message);
@@ -453,13 +437,13 @@
   }
 
   function renderDesk() {
-    const d = state.desk;
-    if (!d) return;
+    if (!state.desk) return;
     const tab = state.deskTab;
     document.querySelectorAll(".desk-pane").forEach((p) => p.classList.remove("active"));
     const pane = $("tab-" + tab);
     if (pane) pane.classList.add("active");
     if (tab === "overview") renderDeskOverview();
+    if (tab === "settings") renderDeskSettings();
     if (tab === "keys") renderDeskKeys();
     if (tab === "docs") renderDeskDocs();
     if (tab === "models") renderDeskModels();
@@ -473,32 +457,20 @@
       ["Base URL", base],
       ["Query", `POST ${base}${pref}/query`],
       ["Ingest file", `POST ${base}${pref}/ingest/file`],
-      ["Documents", `GET ${base}${pref}/documents`],
-      ["Auth header", issuedKey ? `X-API-Key: ${issuedKey}` : "X-API-Key: <issue a key>"],
+      ["Auth", issuedKey ? `X-API-Key: ${issuedKey}` : "X-API-Key: <issue a key>"],
       ["Namespace", tenant.pinecone_namespace],
-      [
-        "Sample curl",
-        `curl -s -X POST "${base}${pref}/query" -H "X-API-Key: ${
-          issuedKey || "<KEY>"
-        }" -H "Content-Type: application/json" -d "{\\"question\\":\\"What is the leave policy?\\"}"`,
-      ],
     ];
     return `<div class="integ-card">
-      <h4>Client integration (copy &amp; share)</h4>
+      <h4>Client integration</h4>
       ${rows
         .map(
-          ([label, val], i) => `<div class="integ-row">
+          ([label, val]) => `<div class="integ-row">
           <div class="integ-label">${esc(label)}</div>
-          <div class="integ-value" id="integ-val-${i}">${esc(val)}</div>
-          <button type="button" class="btn sm" data-copy="${esc(val)}" data-label="${esc(
-            label
-          )}">Copy</button>
+          <div class="integ-value">${esc(val)}</div>
+          <button type="button" class="btn sm" data-copy="${esc(val)}" data-label="${esc(label)}">Copy</button>
         </div>`
         )
         .join("")}
-      <p class="muted" style="margin:10px 0 0;font-size:.78rem">
-        Full API secret is only available when you issue or rotate a key. Later lists show prefix only.
-      </p>
     </div>`;
   }
 
@@ -514,30 +486,21 @@
     const el = $("tab-overview");
     el.innerHTML = `
       <div class="stat-grid">
-        <div class="stat"><div class="lbl">Status</div><div class="val" style="font-size:1rem">${esc(
-          t.status
-        )}</div></div>
-        <div class="stat"><div class="lbl">Keys</div><div class="val">${
-          state.desk.keys?.length || 0
-        }</div></div>
-        <div class="stat"><div class="lbl">Documents</div><div class="val">${
-          state.desk.documents?.length || 0
-        }</div></div>
-        <div class="stat"><div class="lbl">Queries</div><div class="val">${
-          state.desk.query_count || 0
-        }</div></div>
+        <div class="stat"><div class="lbl">Status</div><div class="val" style="font-size:1rem">${esc(t.status)}</div></div>
+        <div class="stat"><div class="lbl">Keys</div><div class="val">${state.desk.keys?.length || 0}</div></div>
+        <div class="stat"><div class="lbl">Documents</div><div class="val">${state.desk.documents?.length || 0}</div></div>
+        <div class="stat"><div class="lbl">Queries</div><div class="val">${state.desk.query_count || 0}</div></div>
       </div>
-      <div class="company-meta" style="margin-bottom:10px">
+      <div class="company-meta" style="margin-bottom:12px">
         Model: <strong>${esc(t.default_model || "—")}</strong> ·
-        Rate limit: ${t.rate_limit_rpm}/min ·
-        Namespace: <code class="mono">${esc(t.pinecone_namespace)}</code>
+        Rate: ${t.rate_limit_rpm}/min ·
+        NS: <code class="mono">${esc(t.pinecone_namespace)}</code>
       </div>
       <div class="form-row">
-        <button type="button" class="btn ${
-          t.status === "active" ? "danger" : "primary"
-        }" id="btnToggleStatus">${
-      t.status === "active" ? "Disable company" : "Enable company"
-    }</button>
+        <button type="button" class="btn ${t.status === "active" ? "danger" : "primary"}" id="btnToggleStatus">
+          <span class="btn-label">${t.status === "active" ? "Disable company" : "Enable company"}</span>
+        </button>
+        <button type="button" class="btn" id="btnDeskSettings">RAG settings</button>
         <button type="button" class="btn" id="btnDeskTest">Open Test API</button>
       </div>
       ${integrationHtml(t, issued)}
@@ -547,12 +510,12 @@
       const next = t.status === "active" ? "disabled" : "active";
       const ok = await confirmAction(
         next === "disabled" ? "Disable company?" : "Enable company?",
-        next === "disabled"
-          ? `${t.name} will stop accepting API calls with its keys.`
-          : `${t.name} will accept API calls again.`,
+        `${t.name} will ${next === "disabled" ? "stop" : "resume"} accepting API calls.`,
         next === "disabled" ? "Disable" : "Enable"
       );
       if (!ok) return;
+      const btn = $("btnToggleStatus");
+      setBtnLoading(btn, true);
       try {
         await req(`/admin/tenants/${t.id}`, {
           method: "PATCH",
@@ -564,13 +527,245 @@
         await openDesk(t.id);
       } catch (e) {
         await notifyError("Update failed", e.message);
+      } finally {
+        setBtnLoading(btn, false);
       }
+    };
+    $("btnDeskSettings").onclick = () => {
+      state.deskTab = "settings";
+      document.querySelectorAll(".desk-tab").forEach((t) => {
+        t.classList.toggle("active", t.dataset.tab === "settings");
+      });
+      renderDesk();
     };
     $("btnDeskTest").onclick = () => {
       $("desk").classList.add("hidden");
       document.querySelector('.nav-item[data-view="test"]').click();
       $("testCompany").value = t.id;
       updateTestMeta();
+    };
+  }
+
+  function valOr(v, fallback) {
+    return v == null || v === "" ? "" : v;
+  }
+
+  function renderDeskSettings() {
+    const t = state.desk.tenant;
+    const defs = state.desk.rag_config?.defaults || {};
+    const el = $("tab-settings");
+    el.innerHTML = `
+      <p class="muted" style="margin-top:0">Empty fields use platform defaults. Saved to Postgres for this company only.</p>
+
+      <div class="settings-section">
+        <h4>System prompt</h4>
+        <p class="sec-desc">Instructions the LLM always follows for this company.</p>
+        <label class="field">
+          <span>System prompt</span>
+          <textarea id="cfgPrompt" placeholder="Leave empty for default company knowledge assistant prompt…">${esc(
+            t.system_prompt || ""
+          )}</textarea>
+          <span class="hint">Tip: tell the model tone, what it may answer, and what to refuse.</span>
+        </label>
+        <label class="field" style="margin-top:10px">
+          <span>No-context message</span>
+          <textarea id="cfgNoCtx" style="min-height:72px" placeholder="Message when retrieval finds nothing…">${esc(
+            t.no_context_message || ""
+          )}</textarea>
+        </label>
+      </div>
+
+      <div class="settings-section">
+        <h4>Retrieval</h4>
+        <p class="sec-desc">How many chunks to fetch and keep for the answer.</p>
+        <div class="form-grid">
+          <label class="field">
+            <span>top_k (retrieve)</span>
+            <input id="cfgTopK" type="number" min="1" max="50" placeholder="${esc(
+              defs.top_k ?? 10
+            )}" value="${esc(valOr(t.top_k))}" />
+            <span class="hint">Default ${esc(defs.top_k ?? 10)}</span>
+          </label>
+          <label class="field">
+            <span>return_top_n (use in context)</span>
+            <input id="cfgReturnN" type="number" min="1" max="20" placeholder="${esc(
+              defs.return_top_n ?? 3
+            )}" value="${esc(valOr(t.return_top_n))}" />
+            <span class="hint">Default ${esc(defs.return_top_n ?? 3)}</span>
+          </label>
+          <label class="field">
+            <span>min retrieval score</span>
+            <input id="cfgMinScore" type="number" min="0" max="1" step="0.01" placeholder="${esc(
+              defs.min_retrieval_score ?? 0.15
+            )}" value="${esc(valOr(t.min_retrieval_score))}" />
+          </label>
+          <label class="field">
+            <span>max chars / chunk</span>
+            <input id="cfgChunkChars" type="number" min="100" max="4000" placeholder="${esc(
+              defs.max_chars_per_chunk ?? 800
+            )}" value="${esc(valOr(t.max_chars_per_chunk))}" />
+          </label>
+        </div>
+        <div class="form-grid" style="margin-top:10px">
+          <div class="switch-row">
+            <div>
+              <strong style="color:var(--text);font-size:.9rem">Rerank</strong>
+              <div class="hint">Cross-encoder reordering before context build</div>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="cfgRerank" ${
+                t.rerank_enabled === false ? "" : "checked"
+              } />
+              <span></span>
+            </label>
+          </div>
+          <div class="switch-row">
+            <div>
+              <strong style="color:var(--text);font-size:.9rem">Answer cache</strong>
+              <div class="hint">Cache identical questions for this company</div>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="cfgCache" ${
+                t.answer_cache_enabled === false ? "" : "checked"
+              } />
+              <span></span>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h4>Token / length limits</h4>
+        <p class="sec-desc">Controls context size and client question length.</p>
+        <div class="form-grid">
+          <label class="field">
+            <span>max_context_chars</span>
+            <input id="cfgCtx" type="number" min="500" max="32000" placeholder="${esc(
+              defs.max_context_chars ?? 4000
+            )}" value="${esc(valOr(t.max_context_chars))}" />
+            <span class="hint">~ tokens ≈ chars / 4 · default ${esc(defs.max_context_chars ?? 4000)}</span>
+          </label>
+          <label class="field">
+            <span>max_question_chars</span>
+            <input id="cfgQ" type="number" min="50" max="20000" placeholder="${esc(
+              defs.max_question_chars ?? 2000
+            )}" value="${esc(valOr(t.max_question_chars))}" />
+          </label>
+          <label class="field">
+            <span>temperature</span>
+            <input id="cfgTemp" type="number" min="0" max="2" step="0.05" placeholder="${esc(
+              defs.temperature ?? 0
+            )}" value="${esc(valOr(t.temperature))}" />
+          </label>
+          <label class="field">
+            <span>rate_limit_rpm</span>
+            <input id="cfgRpm" type="number" min="1" max="10000" value="${esc(
+              t.rate_limit_rpm ?? 60
+            )}" />
+          </label>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h4>Notes</h4>
+        <label class="field">
+          <span>Internal notes (not sent to LLM)</span>
+          <textarea id="cfgNotes" style="min-height:72px">${esc(t.notes || "")}</textarea>
+        </label>
+      </div>
+
+      <div class="form-row">
+        <button type="button" class="btn primary" id="btnSaveRag"><span class="btn-label">Save RAG settings</span></button>
+        <button type="button" class="btn" id="btnResetRag"><span class="btn-label">Clear overrides</span></button>
+      </div>
+    `;
+
+    $("btnSaveRag").onclick = async () => {
+      const btn = $("btnSaveRag");
+      setBtnLoading(btn, true, "Saving…");
+      try {
+        const num = (id) => {
+          const v = $(id).value;
+          if (v === "" || v == null) return null;
+          return Number(v);
+        };
+        const body = {
+          system_prompt: $("cfgPrompt").value || null,
+          no_context_message: $("cfgNoCtx").value || null,
+          notes: $("cfgNotes").value || null,
+          top_k: num("cfgTopK"),
+          return_top_n: num("cfgReturnN"),
+          min_retrieval_score: num("cfgMinScore"),
+          max_chars_per_chunk: num("cfgChunkChars"),
+          max_context_chars: num("cfgCtx"),
+          max_question_chars: num("cfgQ"),
+          temperature: num("cfgTemp"),
+          rate_limit_rpm: num("cfgRpm") ?? 60,
+          rerank_enabled: $("cfgRerank").checked,
+          answer_cache_enabled: $("cfgCache").checked,
+        };
+        await req(`/admin/tenants/${t.id}/rag-settings`, {
+          method: "PUT",
+          headers: headers(true),
+          body: JSON.stringify(body),
+        });
+        await notifySuccess(
+          "Settings saved",
+          `RAG configuration for ${t.name} is stored in Postgres and applies to the next API queries.`
+        );
+        await openDesk(t.id, false);
+        state.deskTab = "settings";
+        document.querySelectorAll(".desk-tab").forEach((x) => {
+          x.classList.toggle("active", x.dataset.tab === "settings");
+        });
+        renderDesk();
+        flash("RAG settings saved");
+      } catch (e) {
+        await notifyError("Save failed", e.message);
+      } finally {
+        setBtnLoading(btn, false);
+      }
+    };
+
+    $("btnResetRag").onclick = async () => {
+      const ok = await confirmAction(
+        "Clear company overrides?",
+        "System prompt, top_k, token limits and related fields will fall back to platform defaults.",
+        "Clear"
+      );
+      if (!ok) return;
+      const btn = $("btnResetRag");
+      setBtnLoading(btn, true, "Clearing…");
+      try {
+        await req(`/admin/tenants/${t.id}/rag-settings`, {
+          method: "PUT",
+          headers: headers(true),
+          body: JSON.stringify({
+            system_prompt: null,
+            no_context_message: null,
+            top_k: null,
+            return_top_n: null,
+            min_retrieval_score: null,
+            max_chars_per_chunk: null,
+            max_context_chars: null,
+            max_question_chars: null,
+            temperature: null,
+            rerank_enabled: null,
+            answer_cache_enabled: null,
+          }),
+        });
+        await notifySuccess("Overrides cleared", "This company now uses platform defaults.");
+        await openDesk(t.id, false);
+        state.deskTab = "settings";
+        document.querySelectorAll(".desk-tab").forEach((x) => {
+          x.classList.toggle("active", x.dataset.tab === "settings");
+        });
+        renderDesk();
+      } catch (e) {
+        await notifyError("Reset failed", e.message);
+      } finally {
+        setBtnLoading(btn, false);
+      }
     };
   }
 
@@ -582,9 +777,8 @@
       <div class="form-row">
         <label class="field grow"><span>Key name</span><input id="deskKeyName" value="production" /></label>
         <label class="field grow"><span>Scopes</span><input id="deskKeyScopes" value="query:read,ingest:write,docs:read" /></label>
-        <button type="button" class="btn primary" id="deskIssueKey">Issue key</button>
+        <button type="button" class="btn primary" id="deskIssueKey"><span class="btn-label">Issue key</span></button>
       </div>
-      <div id="deskKeySecret" class="secret-box hidden"></div>
       <div class="table-wrap" style="margin-top:12px">
         <table>
           <thead><tr><th>Name</th><th>Prefix</th><th>Scopes</th><th>Status</th><th></th></tr></thead>
@@ -595,9 +789,7 @@
               <td>${esc(k.name)}</td>
               <td class="mono">${esc(k.key_prefix)}</td>
               <td>${esc((k.scopes || []).join(", "))}</td>
-              <td><span class="badge ${k.status === "active" ? "ok" : "err"}">${esc(
-                  k.status
-                )}</span></td>
+              <td><span class="badge ${k.status === "active" ? "ok" : "err"}">${esc(k.status)}</span></td>
               <td>${
                 k.status === "active"
                   ? `<button class="btn sm danger" data-rev="${k.id}">Revoke</button>
@@ -611,8 +803,13 @@
         </table>
       </div>`;
     $("deskIssueKey").onclick = async () => {
+      const btn = $("deskIssueKey");
+      setBtnLoading(btn, true, "Issuing…");
       try {
-        const scopes = $("deskKeyScopes").value.split(",").map((s) => s.trim()).filter(Boolean);
+        const scopes = $("deskKeyScopes")
+          .value.split(",")
+          .map((s) => s.trim())
+          .filter(Boolean);
         const d = await req(`/admin/tenants/${t.id}/keys`, {
           method: "POST",
           headers: headers(true),
@@ -624,37 +821,32 @@
         await openDesk(t.id);
       } catch (e) {
         await notifyError("Issue key failed", e.message);
+      } finally {
+        setBtnLoading(btn, false);
       }
     };
     el.querySelectorAll("[data-rev]").forEach((b) => {
       b.onclick = async () => {
-        const ok = await confirmAction(
-          "Revoke key?",
-          "This key will stop working immediately for client API calls.",
-          "Revoke"
-        );
-        if (!ok) return;
+        if (!(await confirmAction("Revoke key?", "This key stops working immediately.", "Revoke")))
+          return;
+        setBtnLoading(b, true);
         try {
-          await req(`/admin/keys/${b.dataset.rev}/revoke`, {
-            method: "POST",
-            headers: headers(false),
-          });
+          await req(`/admin/keys/${b.dataset.rev}/revoke`, { method: "POST", headers: headers(false) });
           await notifySuccess("Key revoked", "The key is no longer active.");
           await openDesk(t.id);
           refresh();
         } catch (e) {
           await notifyError("Revoke failed", e.message);
+        } finally {
+          setBtnLoading(b, false);
         }
       };
     });
     el.querySelectorAll("[data-rot]").forEach((b) => {
       b.onclick = async () => {
-        const ok = await confirmAction(
-          "Rotate key?",
-          "The old key stops working. You will get a new secret to copy once.",
-          "Rotate"
-        );
-        if (!ok) return;
+        if (!(await confirmAction("Rotate key?", "Old key dies. New secret shown once.", "Rotate")))
+          return;
+        setBtnLoading(b, true, "…");
         try {
           const d = await req(`/admin/keys/${b.dataset.rot}/rotate`, {
             method: "POST",
@@ -662,10 +854,12 @@
           });
           state.testKeys[t.id] = d.api_key;
           sessionStorage.setItem("rag_test_keys", JSON.stringify(state.testKeys));
-          await notifySuccess("Key rotated", "Copy the new key now. Old key is dead.", d.api_key);
+          await notifySuccess("Key rotated", "Copy the new key now.", d.api_key);
           await openDesk(t.id);
         } catch (e) {
           await notifyError("Rotate failed", e.message);
+        } finally {
+          setBtnLoading(b, false);
         }
       };
     });
@@ -677,12 +871,12 @@
     const el = $("tab-docs");
     el.innerHTML = `
       <div class="form-row">
-        <label class="field grow"><span>Upload file for this company</span>
+        <label class="field grow"><span>Upload PDF / MD / TXT</span>
           <input type="file" id="deskFile" accept=".pdf,.md,.txt,.markdown" />
         </label>
-        <button type="button" class="btn primary" id="deskUpload">Upload &amp; embed</button>
+        <button type="button" class="btn primary" id="deskUpload"><span class="btn-label">Upload &amp; embed</span></button>
       </div>
-      <div class="table-wrap">
+      <div class="table-wrap" style="margin-top:12px">
         <table>
           <thead><tr><th>File</th><th>Status</th><th>Vectors</th><th></th></tr></thead>
           <tbody>
@@ -714,8 +908,11 @@
         await notifyError("No file", "Choose a PDF, Markdown, or text file first.");
         return;
       }
+      const btn = $("deskUpload");
+      setBtnLoading(btn, true, "Uploading…");
       const fd = new FormData();
       fd.append("file", f);
+      pushBusy(1);
       try {
         const r = await fetch(api + `/admin/tenants/${t.id}/documents`, {
           method: "POST",
@@ -732,30 +929,32 @@
         refresh();
       } catch (e) {
         await notifyError("Upload failed", e.message);
+      } finally {
+        pushBusy(-1);
+        setBtnLoading(btn, false);
       }
     };
     el.querySelectorAll("[data-re]").forEach((b) => {
       b.onclick = async () => {
+        setBtnLoading(b, true);
         try {
           await req(`/admin/documents/${b.dataset.re}/reprocess`, {
             method: "POST",
             headers: headers(false),
           });
-          await notifySuccess("Reprocessed", "Document was re-embedded into the vector index.");
+          await notifySuccess("Reprocessed", "Document re-embedded into the vector index.");
           await openDesk(t.id);
         } catch (e) {
           await notifyError("Reprocess failed", e.message);
+        } finally {
+          setBtnLoading(b, false);
         }
       };
     });
     el.querySelectorAll("[data-del]").forEach((b) => {
       b.onclick = async () => {
-        const ok = await confirmAction(
-          "Delete document?",
-          "Vectors for this file will be removed from the company namespace.",
-          "Delete"
-        );
-        if (!ok) return;
+        if (!(await confirmAction("Delete document?", "Vectors will be removed.", "Delete"))) return;
+        setBtnLoading(b, true);
         try {
           await req(`/admin/documents/${b.dataset.del}`, {
             method: "DELETE",
@@ -766,6 +965,8 @@
           refresh();
         } catch (e) {
           await notifyError("Delete failed", e.message);
+        } finally {
+          setBtnLoading(b, false);
         }
       };
     });
@@ -778,20 +979,26 @@
       <label class="field"><span>LLM for this company (OpenRouter model id)</span>
         <input id="deskModel" value="${esc(t.default_model || "")}" placeholder="openai/gpt-4o-mini" />
       </label>
-      <button type="button" class="btn primary" id="deskSaveModel" style="margin-top:10px">Save model</button>
+      <button type="button" class="btn primary" id="deskSaveModel" style="margin-top:10px">
+        <span class="btn-label">Save model</span>
+      </button>
       <p class="muted" style="margin-top:10px">Queries for this tenant use this model when set.</p>`;
     $("deskSaveModel").onclick = async () => {
+      const btn = $("deskSaveModel");
+      setBtnLoading(btn, true, "Saving…");
       try {
         await req(`/admin/tenants/${t.id}/models`, {
           method: "PATCH",
           headers: headers(true),
           body: JSON.stringify({ model_id: $("deskModel").value }),
         });
-        await notifySuccess("Model updated", `Default model for ${t.name} was saved.`);
+        await notifySuccess("Model updated", `Default model for ${t.name} saved.`);
         await openDesk(t.id);
         refresh();
       } catch (e) {
         await notifyError("Save failed", e.message);
+      } finally {
+        setBtnLoading(btn, false);
       }
     };
   }
@@ -844,7 +1051,7 @@
   $("deskClose").onclick = () => $("desk").classList.add("hidden");
   $("deskBackdrop").onclick = () => $("desk").classList.add("hidden");
 
-  // ── Test API ──
+  // ── Test ──
   function renderTestCompanySelect() {
     const sel = $("testCompany");
     const cur = sel.value;
@@ -865,21 +1072,22 @@
       return;
     }
     const k = state.testKeys[id];
-    $("testMeta").innerHTML = `Namespace <code class="mono">${esc(
+    $("testMeta").innerHTML = `NS <code class="mono">${esc(
       t.pinecone_namespace
-    )}</code> · Model ${esc(t.default_model || "—")} · Test key: ${
-      k ? `<code class="mono">${esc(k.slice(0, 18))}…</code> (session)` : "<em>not issued yet</em>"
-    }`;
+    )}</code> · Model ${esc(t.default_model || "—")} · top_k ${
+      t.top_k ?? "default"
+    } · key: ${k ? `<code class="mono">${esc(k.slice(0, 18))}…</code>` : "<em>not issued</em>"}`;
   }
-
   $("testCompany").onchange = updateTestMeta;
 
   $("btnTestKey").onclick = async () => {
     const id = $("testCompany").value;
     if (!id) {
-      await notifyError("Select a company", "Choose a company before issuing a test key.");
+      await notifyError("Select a company", "Choose a company first.");
       return;
     }
+    const btn = $("btnTestKey");
+    setBtnLoading(btn, true, "Issuing…");
     try {
       const d = await req(`/admin/tenants/${id}/keys`, {
         method: "POST",
@@ -892,14 +1100,12 @@
       state.testKeys[id] = d.api_key;
       sessionStorage.setItem("rag_test_keys", JSON.stringify(state.testKeys));
       updateTestMeta();
-      await notifySuccess(
-        "Test key ready",
-        "This key is kept for this browser session only. Use it for Test API chat.",
-        d.api_key
-      );
+      await notifySuccess("Test key ready", "Kept for this browser session.", d.api_key);
       await refresh();
     } catch (e) {
       await notifyError("Could not issue test key", e.message);
+    } finally {
+      setBtnLoading(btn, false);
     }
   };
 
@@ -912,13 +1118,11 @@
     }
     box.innerHTML = state.testMessages
       .map((m) => {
-        if (m.role === "user") {
-          return `<div class="bubble user">${esc(m.content)}</div>`;
-        }
+        if (m.role === "user") return `<div class="bubble user">${esc(m.content)}</div>`;
         const chips = [
           m.lag_stage && `lag: ${m.lag_stage}`,
           m.total != null && `${m.total}ms`,
-          m.model && m.model,
+          m.model,
           m.cache_hit && `cache: ${m.cache_hit}`,
         ]
           .filter(Boolean)
@@ -946,7 +1150,7 @@
       return;
     }
     if (!q) return;
-    let key = state.testKeys[id];
+    const key = state.testKeys[id];
     if (!key) {
       await notifyError("No test key", "Click “Issue / refresh test key” first.");
       return;
@@ -954,14 +1158,13 @@
     state.testMessages.push({ role: "user", content: q });
     $("testQuestion").value = "";
     renderTestMessages();
-    $("btnTestSend").disabled = true;
+    const btn = $("btnTestSend");
+    setBtnLoading(btn, true, "…");
+    pushBusy(1);
     try {
       const r = await fetch(api + "/query", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-API-Key": key,
-        },
+        headers: { "Content-Type": "application/json", "X-API-Key": key },
         body: JSON.stringify({ question: q, include_timings: true }),
       });
       const d = await r.json();
@@ -977,14 +1180,12 @@
       });
       renderTestMessages();
     } catch (e) {
-      state.testMessages.push({
-        role: "assistant",
-        content: "Error: " + e.message,
-      });
+      state.testMessages.push({ role: "assistant", content: "Error: " + e.message });
       renderTestMessages();
       await notifyError("Query failed", e.message);
     } finally {
-      $("btnTestSend").disabled = false;
+      pushBusy(-1);
+      setBtnLoading(btn, false);
     }
   };
 
@@ -1017,11 +1218,9 @@
       $("modelChips").innerHTML = (m.items || [])
         .map(
           (x) =>
-            `<button type="button" class="model-chip ${
-              x.is_default ? "default" : ""
-            }" data-mid="${esc(x.model_id)}">${esc(x.label)}${
-              x.is_default ? " · default" : ""
-            }</button>`
+            `<button type="button" class="model-chip ${x.is_default ? "default" : ""}" data-mid="${esc(
+              x.model_id
+            )}">${esc(x.label)}${x.is_default ? " · default" : ""}</button>`
         )
         .join("");
       $("modelChips").querySelectorAll("[data-mid]").forEach((b) => {
@@ -1030,28 +1229,31 @@
         };
       });
     } catch {
-      /* ignore model catalog errors on partial load */
+      /* ignore */
     }
   }
 
   $("btnSaveModel").onclick = async () => {
+    const btn = $("btnSaveModel");
+    setBtnLoading(btn, true, "Saving…");
     try {
       await req("/admin/models/default", {
         method: "PUT",
         headers: headers(true),
         body: JSON.stringify({ model_id: $("sysModel").value }),
       });
-      await notifySuccess("Default model saved", "Platform catalog default was updated.");
+      await notifySuccess("Default model saved", "Platform catalog default updated.");
       renderSystem();
     } catch (e) {
       await notifyError("Save failed", e.message);
+    } finally {
+      setBtnLoading(btn, false);
     }
   };
 
-  // ── Add company modal ──
+  // ── Add company ──
   function openAddModal() {
     $("modalAdd").classList.remove("hidden");
-    $("mSecret").classList.add("hidden");
     $("mName").value = "";
   }
   $("btnAddCompany").onclick = openAddModal;
@@ -1063,6 +1265,8 @@
       await notifyError("Name required", "Enter a company name.");
       return;
     }
+    const btn = $("mSave");
+    setBtnLoading(btn, true, "Creating…");
     try {
       const d = await req("/admin/onboard", {
         method: "POST",
@@ -1078,38 +1282,38 @@
       $("modalAdd").classList.add("hidden");
       await notifySuccess(
         "Company created",
-        `${d.tenant.name} is ready. Copy the production API key now — it is only shown once.`,
+        `${d.tenant.name} is ready. Copy the API key, then open RAG settings.`,
         d.api_key
       );
       await refresh();
       openDesk(d.tenant.id);
     } catch (e) {
       await notifyError("Onboard failed", e.message);
+    } finally {
+      setBtnLoading(btn, false);
     }
   };
 
   $("companySearch").oninput = renderCompanies;
-  $("btnRefresh").onclick = refresh;
-
-  // Close result dialog on backdrop click
-  $("modalDialog").addEventListener("click", (ev) => {
-    if (ev.target === $("modalDialog") && dlgResolve) {
-      closeDialog(false);
+  $("btnRefresh").onclick = async () => {
+    const btn = $("btnRefresh");
+    setBtnLoading(btn, true, "…");
+    try {
+      await refresh();
+      flash("Refreshed");
+    } finally {
+      setBtnLoading(btn, false);
     }
+  };
+
+  $("modalDialog").addEventListener("click", (ev) => {
+    if (ev.target === $("modalDialog") && dlgResolve) closeDialog(false);
   });
 
-  // Boot: try stored key silently, else show gate (and allow empty if auth off)
   (async function boot() {
     const stored = cleanKey(localStorage.getItem(STORAGE_KEY) || "");
     $("gateKey").value = stored;
-    // Try stored key first; if empty, try empty (auth may be disabled)
     const ok = await connectWithKey(stored, { silent: true });
-    if (!ok) {
-      setConnectedUI(false);
-      // If auth disabled and empty failed for other reasons, still show gate
-      if (!stored) {
-        showGateError("");
-      }
-    }
+    if (!ok) setConnectedUI(false);
   })();
 })();

@@ -11,6 +11,7 @@ from app.core.exceptions import NotConfiguredError
 from app.core.logging import get_logger
 from app.core.timing import StageTimer
 from app.models.schemas import QueryRequest, QueryResponse, SourceChunk
+from app.models.tenant_config import TenantRagConfig
 from app.rag.chains import run_qa, stream_qa
 from app.rag.context_builder import build_context, compress_sources, estimate_tokens
 from app.rag.reranker import hits_to_sources, rerank_sources
@@ -20,11 +21,6 @@ from app.services.metrics_store import QueryMetric, metrics_store
 from app.vectorstore.pinecone_client import PineconeClient
 
 logger = get_logger("services.rag")
-
-_NO_CONTEXT_ANSWER = (
-    "I could not find relevant information in the company knowledge base "
-    "for this question."
-)
 
 
 def _lag_stage(timings: dict[str, int]) -> str | None:
@@ -65,21 +61,27 @@ class RAGService:
         request: QueryRequest,
         *,
         model_override: str | None = None,
+        tenant_config: TenantRagConfig | None = None,
     ) -> QueryResponse:
         """Full path: cache → embed → retrieve → rerank → compress → LLM."""
+        cfg = tenant_config or TenantRagConfig()
         timer = StageTimer()
         timer.start("total")
 
         question = request.question.strip()
         namespace = request.namespace or settings.pinecone_namespace or "default"
-        retrieve_k = request.top_k or settings.retrieve_top_k or settings.top_k
+        retrieve_k = request.top_k or cfg.effective_top_k()
+        return_n = cfg.effective_return_top_n()
         include_timings = (
             settings.include_timings
             if request.include_timings is None
             else request.include_timings
         )
-        llm_model = model_override or settings.openrouter_model
+        llm_model = model_override or cfg.default_model or settings.openrouter_model
         cache_hit = "none"
+        no_ctx = cfg.effective_no_context()
+        use_answer_cache = cfg.effective_answer_cache()
+        use_rerank = cfg.effective_rerank()
 
         if not settings.is_pinecone_configured:
             raise NotConfiguredError("Pinecone")
@@ -87,14 +89,14 @@ class RAGService:
         logger.info(
             "query retrieve_k=%s return_n=%s model=%s ns=%s rerank=%s",
             retrieve_k,
-            settings.return_top_n,
+            return_n,
             llm_model,
             namespace,
-            settings.rerank_enabled,
+            use_rerank,
         )
 
         # ---- exact answer cache ----
-        if settings.answer_cache_enabled:
+        if use_answer_cache:
             akey = cache_service.answer_key(question, namespace, retrieve_k)
             cached = cache_service.answer_cache.get(akey)
             if cached is not None:
@@ -144,7 +146,7 @@ class RAGService:
             resp = QueryResponse(
                 status="ok",
                 question=question,
-                answer=_NO_CONTEXT_ANSWER,
+                answer=no_ctx,
                 sources=[],
                 phase=settings.phase,
                 model=llm_model,
@@ -159,12 +161,20 @@ class RAGService:
 
         # ---- rerank ----
         with timer.measure("rerank"):
-            ranked = rerank_sources(question, sources, top_n=settings.return_top_n)
+            if use_rerank:
+                ranked = rerank_sources(question, sources, top_n=return_n)
+            else:
+                ranked = sources[:return_n]
 
         # ---- compress context ----
         with timer.measure("context"):
-            compressed = compress_sources(ranked)
-            context = build_context(compressed)
+            compressed = compress_sources(
+                ranked,
+                top_n=return_n,
+                min_score=cfg.effective_min_score(),
+                max_chars_per_chunk=cfg.effective_max_chars_per_chunk(),
+            )
+            context = build_context(compressed, max_chars=cfg.effective_max_context_chars())
             ctx_chars = len(context)
             ctx_tokens = estimate_tokens(context)
 
@@ -173,7 +183,14 @@ class RAGService:
 
         # ---- LLM ----
         with timer.measure("llm"):
-            answer = run_qa(question=question, context=context, model=llm_model)
+            answer = run_qa(
+                question=question,
+                context=context,
+                model=llm_model,
+                system_prompt=cfg.effective_system_prompt(),
+                temperature=cfg.effective_temperature(),
+                no_context_message=no_ctx,
+            )
 
         timer.stop("total")
         timings = timer.as_dict()
@@ -192,7 +209,7 @@ class RAGService:
             lag_stage=_lag_stage(timings) if include_timings else None,
         )
 
-        if settings.answer_cache_enabled:
+        if use_answer_cache:
             cache_service.answer_cache.set(
                 cache_service.answer_key(question, namespace, retrieve_k),
                 {
@@ -215,13 +232,24 @@ class RAGService:
         )
         return resp
 
-    def stream_query(self, request: QueryRequest) -> Iterator[dict[str, Any]]:
+    def stream_query(
+        self,
+        request: QueryRequest,
+        *,
+        model_override: str | None = None,
+        tenant_config: TenantRagConfig | None = None,
+    ) -> Iterator[dict[str, Any]]:
         """Yield events: stage updates, tokens, final payload."""
+        cfg = tenant_config or TenantRagConfig()
         timer = StageTimer()
         timer.start("total")
         question = request.question.strip()
         namespace = request.namespace
-        retrieve_k = request.top_k or settings.retrieve_top_k or settings.top_k
+        retrieve_k = request.top_k or cfg.effective_top_k()
+        return_n = cfg.effective_return_top_n()
+        llm_model = model_override or cfg.default_model or settings.openrouter_model
+        no_ctx = cfg.effective_no_context()
+        use_rerank = cfg.effective_rerank()
 
         if not settings.is_pinecone_configured:
             raise NotConfiguredError("Pinecone")
@@ -256,10 +284,10 @@ class RAGService:
             final = QueryResponse(
                 status="ok",
                 question=question,
-                answer=_NO_CONTEXT_ANSWER,
+                answer=no_ctx,
                 sources=[],
                 phase=settings.phase,
-                model=settings.openrouter_model,
+                model=llm_model,
                 timings_ms=timer.as_dict(),
                 cache_hit="embed" if embed_hit else "none",
                 lag_stage=_lag_stage(timer.as_dict()),
@@ -270,7 +298,10 @@ class RAGService:
 
         yield {"event": "stage", "stage": "rerank", "status": "start"}
         with timer.measure("rerank"):
-            ranked = rerank_sources(question, sources, top_n=settings.return_top_n)
+            if use_rerank:
+                ranked = rerank_sources(question, sources, top_n=return_n)
+            else:
+                ranked = sources[:return_n]
         yield {
             "event": "stage",
             "stage": "rerank",
@@ -280,8 +311,13 @@ class RAGService:
         }
 
         with timer.measure("context"):
-            compressed = compress_sources(ranked)
-            context = build_context(compressed)
+            compressed = compress_sources(
+                ranked,
+                top_n=return_n,
+                min_score=cfg.effective_min_score(),
+                max_chars_per_chunk=cfg.effective_max_chars_per_chunk(),
+            )
+            context = build_context(compressed, max_chars=cfg.effective_max_context_chars())
         yield {
             "event": "stage",
             "stage": "context",
@@ -297,7 +333,14 @@ class RAGService:
         yield {"event": "stage", "stage": "llm", "status": "start"}
         answer_parts: list[str] = []
         with timer.measure("llm"):
-            for token in stream_qa(question=question, context=context):
+            for token in stream_qa(
+                question=question,
+                context=context,
+                model=llm_model,
+                system_prompt=cfg.effective_system_prompt(),
+                temperature=cfg.effective_temperature(),
+                no_context_message=no_ctx,
+            ):
                 answer_parts.append(token)
                 yield {"event": "token", "text": token}
         answer = "".join(answer_parts).strip()
@@ -310,7 +353,7 @@ class RAGService:
             answer=answer,
             sources=compressed,
             phase=settings.phase,
-            model=settings.openrouter_model,
+            model=llm_model,
             timings_ms=timings,
             cache_hit="embed" if embed_hit else "none",
             context_chars=len(context),

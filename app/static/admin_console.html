@@ -7,33 +7,36 @@
   <link rel="stylesheet" href="/static/admin_console.css" />
 </head>
 <body>
-  <!-- Auth gate: must connect with platform admin key when AUTH_ENABLED -->
+  <div id="globalLoad"></div>
+  <div class="toast-strip" id="toastStrip"></div>
+
+  <!-- Auth gate -->
   <div id="authGate" class="auth-gate">
     <div class="auth-card">
-      <div class="brand" style="margin-bottom:8px">
+      <div class="brand" style="padding:0;margin-bottom:4px">
         <div class="logo">R</div>
         <div>
-          <div class="brand-title">RAG Platform Admin</div>
-          <div class="brand-sub">Enter your platform admin key</div>
+          <div class="brand-title">RAG Platform</div>
+          <div class="brand-sub">Operator console</div>
         </div>
       </div>
-      <p class="muted" style="margin:0 0 8px">
-        Use the value of <code>API_KEY_ADMIN</code> or <code>BOOTSTRAP_ADMIN_KEY</code> from the server env
-        (or a DB-issued platform key). Client tenant keys will not work here.
+      <h1>Sign in with admin key</h1>
+      <p class="muted" style="margin:0">
+        Paste <code>API_KEY_ADMIN</code> from Railway env (or a DB platform key). Tenant client keys will not work here.
       </p>
       <label class="field">
         <span>Platform admin key</span>
         <div class="key-row">
           <input id="gateKey" type="password" placeholder="Paste admin key…" autocomplete="off" spellcheck="false" />
-          <button type="button" class="btn sm" id="gateToggle" title="Show/hide">Show</button>
+          <button type="button" class="btn sm" id="gateToggle">Show</button>
         </div>
       </label>
       <p id="gateError" class="field-error hidden"></p>
-      <p id="gateHint" class="help" style="margin:0">
-        Tip: no surrounding quotes. Restart the server after changing env vars.
-      </p>
-      <div class="modal-actions" style="margin-top:12px">
-        <button type="button" class="btn primary" id="gateConnect">Connect</button>
+      <p class="help" style="margin:0">No quotes. Redeploy after changing env vars.</p>
+      <div class="modal-actions">
+        <button type="button" class="btn primary" id="gateConnect">
+          <span class="btn-label">Connect</span>
+        </button>
       </div>
     </div>
   </div>
@@ -44,7 +47,7 @@
         <div class="logo">R</div>
         <div>
           <div class="brand-title">RAG Platform</div>
-          <div class="brand-sub">Operator console</div>
+          <div class="brand-sub">API operator desk</div>
         </div>
       </div>
       <nav class="nav">
@@ -55,11 +58,11 @@
       </nav>
       <div class="sidebar-foot">
         <div class="auth-status">
-          <span class="lbl">Signed in as admin</span>
+          <span class="lbl">Signed in</span>
           <span id="authKeyHint" class="mono muted">—</span>
         </div>
-        <button type="button" class="btn sm" id="btnDisconnect" style="width:100%;margin-top:8px">Change key</button>
-        <p class="help" style="margin-top:8px">Env <code>API_KEY_ADMIN</code> · never share with clients.</p>
+        <button type="button" class="btn sm" id="btnDisconnect" style="width:100%">Change key</button>
+        <p class="help">Env <code>API_KEY_ADMIN</code> · never share with clients.</p>
       </div>
     </aside>
 
@@ -67,20 +70,19 @@
       <header class="topbar">
         <div>
           <h1 id="pageTitle">Home</h1>
-          <p class="muted" id="pageSub">Setup checklist and next actions</p>
+          <p class="muted" id="pageSub" style="margin:4px 0 0">Setup checklist and next actions</p>
         </div>
         <div class="top-actions">
           <span id="statusPill" class="pill">…</span>
-          <button type="button" class="btn" id="btnRefresh">Refresh</button>
+          <button type="button" class="btn" id="btnRefresh"><span class="btn-label">Refresh</span></button>
           <a class="btn" href="/docs" target="_blank" rel="noopener">OpenAPI</a>
         </div>
       </header>
 
-      <!-- HOME -->
       <section class="view active" id="view-home">
         <div class="banner">
-          <strong>This is an API platform</strong>
-          <p class="muted" style="margin:6px 0 0">Client companies call your endpoints with an API key. You manage companies, keys, and documents here.</p>
+          <strong>API platform for client companies</strong>
+          <p class="muted" style="margin:6px 0 0">Manage companies, keys, documents, and per-company RAG settings (prompt, top‑k, token limits).</p>
         </div>
         <div class="progress-card">
           <div class="progress-head">
@@ -101,46 +103,43 @@
         </div>
       </section>
 
-      <!-- COMPANIES -->
       <section class="view" id="view-companies">
         <div class="toolbar">
           <input id="companySearch" class="search" placeholder="Search companies…" />
-          <button type="button" class="btn primary" id="btnAddCompany">+ Add company</button>
+          <button type="button" class="btn primary" id="btnAddCompany"><span class="btn-label">+ Add company</span></button>
         </div>
         <div id="companiesEmpty" class="empty hidden">
           <h3>No companies yet</h3>
-          <p class="muted">Create a client company, issue an API key, upload docs, then test.</p>
-          <button type="button" class="btn primary" id="btnAddCompany2">Add company</button>
+          <p class="muted">Create a client company, issue an API key, upload docs, then configure RAG settings.</p>
+          <button type="button" class="btn primary" id="btnAddCompany2"><span class="btn-label">Add company</span></button>
         </div>
         <div class="company-grid" id="companyGrid"></div>
       </section>
 
-      <!-- TEST API -->
       <section class="view" id="view-test">
         <div class="card">
           <h3>Test API (live RAG)</h3>
-          <p class="muted">Select a company and chat using a real tenant API key (same path clients use).</p>
+          <p class="muted">Uses a real tenant API key — same path clients use.</p>
           <div class="form-row">
             <label class="field grow">
               <span>Company</span>
               <select id="testCompany"></select>
             </label>
-            <button type="button" class="btn" id="btnTestKey">Issue / refresh test key</button>
+            <button type="button" class="btn" id="btnTestKey"><span class="btn-label">Issue / refresh test key</span></button>
           </div>
           <div class="meta-row" id="testMeta">No company selected</div>
         </div>
         <div class="test-chat card">
           <div id="testMessages" class="test-messages">
-            <div class="empty-hint">Answers come from that company’s documents via POST /query.</div>
+            <div class="empty-hint">Select a company, issue a test key, then ask a question.</div>
           </div>
           <form id="testForm" class="test-form">
             <input id="testQuestion" placeholder="Ask a question…" autocomplete="off" />
-            <button type="submit" class="btn primary" id="btnTestSend">Send</button>
+            <button type="submit" class="btn primary" id="btnTestSend"><span class="btn-label">Send</span></button>
           </form>
         </div>
       </section>
 
-      <!-- SYSTEM -->
       <section class="view" id="view-system">
         <div class="card">
           <h3>Integrations</h3>
@@ -148,11 +147,12 @@
         </div>
         <div class="card">
           <h3>Platform defaults</h3>
+          <p class="muted" style="margin-top:0">These apply when a company has no override set.</p>
           <div class="form-grid">
             <label class="field"><span>Default OpenRouter model</span>
               <input id="sysModel" placeholder="openai/gpt-4o-mini" />
             </label>
-            <button type="button" class="btn primary" id="btnSaveModel" style="align-self:end">Save catalog default</button>
+            <button type="button" class="btn primary" id="btnSaveModel" style="align-self:end"><span class="btn-label">Save catalog default</span></button>
           </div>
           <div class="chip-row" id="modelChips"></div>
           <p class="muted" id="embedInfo" style="margin-top:12px"></p>
@@ -161,28 +161,27 @@
     </main>
   </div>
 
-  <!-- ADD COMPANY MODAL -->
+  <!-- Add company -->
   <div id="modalAdd" class="modal hidden">
     <div class="modal-card">
-      <h3>Add company</h3>
-      <p class="muted">Creates tenant + first API key (recommended).</p>
+      <h3 style="margin:0">Add company</h3>
+      <p class="muted" style="margin:0">Creates tenant + first API key.</p>
       <label class="field"><span>Company name *</span><input id="mName" placeholder="Acme Corp" /></label>
       <label class="field"><span>Key name</span><input id="mKeyName" value="production" /></label>
       <label class="field"><span>LLM model</span><input id="mModel" placeholder="openai/gpt-4o-mini" /></label>
       <div class="modal-actions">
         <button type="button" class="btn" id="mCancel">Cancel</button>
-        <button type="button" class="btn primary" id="mSave">Create &amp; issue key</button>
+        <button type="button" class="btn primary" id="mSave"><span class="btn-label">Create &amp; issue key</span></button>
       </div>
-      <div id="mSecret" class="secret-box hidden"></div>
     </div>
   </div>
 
-  <!-- RESULT / CONFIRM DIALOG -->
+  <!-- Result dialog -->
   <div id="modalDialog" class="modal hidden" role="dialog" aria-modal="true">
     <div class="modal-card dialog-card">
       <div id="dlgIcon" class="dlg-icon ok">✓</div>
       <h3 id="dlgTitle">Done</h3>
-      <p id="dlgMessage" class="muted" style="margin:0;white-space:pre-wrap"></p>
+      <p id="dlgMessage" class="muted" style="margin:0"></p>
       <div id="dlgSecret" class="secret-box hidden"></div>
       <div class="modal-actions" id="dlgActions">
         <button type="button" class="btn primary" id="dlgOk">OK</button>
@@ -190,26 +189,28 @@
     </div>
   </div>
 
-  <!-- COMPANY DESK DRAWER -->
+  <!-- Company desk -->
   <div id="desk" class="desk hidden">
     <div class="desk-backdrop" id="deskBackdrop"></div>
     <div class="desk-panel">
       <header class="desk-head">
         <div>
           <h2 id="deskTitle">Company</h2>
-          <p class="muted" id="deskSub"></p>
+          <p class="muted" id="deskSub" style="margin:4px 0 0"></p>
         </div>
         <button type="button" class="btn" id="deskClose">Close</button>
       </header>
-      <nav class="desk-tabs" id="deskTabs">
+      <nav class="desk-tabs">
         <button type="button" class="desk-tab active" data-tab="overview">Overview</button>
+        <button type="button" class="desk-tab" data-tab="settings">RAG settings</button>
         <button type="button" class="desk-tab" data-tab="keys">API keys</button>
         <button type="button" class="desk-tab" data-tab="docs">Documents</button>
-        <button type="button" class="desk-tab" data-tab="models">Models</button>
+        <button type="button" class="desk-tab" data-tab="models">Model</button>
         <button type="button" class="desk-tab" data-tab="usage">Usage</button>
       </nav>
       <div class="desk-body">
         <div class="desk-pane active" id="tab-overview"></div>
+        <div class="desk-pane" id="tab-settings"></div>
         <div class="desk-pane" id="tab-keys"></div>
         <div class="desk-pane" id="tab-docs"></div>
         <div class="desk-pane" id="tab-models"></div>

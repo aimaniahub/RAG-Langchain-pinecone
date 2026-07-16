@@ -5,7 +5,16 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -28,6 +37,20 @@ class Tenant(Base):
     default_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     rate_limit_rpm: Mapped[int] = mapped_column(Integer, default=60)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Per-company RAG configuration (null = use platform defaults from env)
+    system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    top_k: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    return_top_n: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_context_chars: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_question_chars: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_chars_per_chunk: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    temperature: Mapped[float | None] = mapped_column(Float, nullable=True)
+    min_retrieval_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rerank_enabled: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 1/0/null
+    answer_cache_enabled: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    no_context_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

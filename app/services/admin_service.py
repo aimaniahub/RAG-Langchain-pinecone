@@ -357,11 +357,71 @@ class AdminService:
         t = self.get_tenant(tenant_id)
         if not t:
             raise AppError("Tenant not found")
-        for k in ("name", "status", "default_model", "notes"):
-            if k in fields and fields[k] is not None:
-                setattr(t, k, fields[k])
-        if fields.get("rate_limit_rpm") is not None:
-            t.rate_limit_rpm = int(fields["rate_limit_rpm"])
+        str_fields = ("name", "status", "default_model", "notes", "system_prompt", "no_context_message")
+        for k in str_fields:
+            if k not in fields:
+                continue
+            val = fields[k]
+            if k in {"system_prompt", "no_context_message", "notes", "default_model"}:
+                # allow explicit null/empty to clear override
+                if val is None or (isinstance(val, str) and not val.strip()):
+                    setattr(t, k, None if k != "name" else t.name)
+                else:
+                    setattr(t, k, str(val).strip() if k != "system_prompt" else str(val))
+            elif val is not None:
+                setattr(t, k, val)
+
+        int_fields = (
+            "rate_limit_rpm",
+            "top_k",
+            "return_top_n",
+            "max_context_chars",
+            "max_question_chars",
+            "max_chars_per_chunk",
+        )
+        for k in int_fields:
+            if k not in fields:
+                continue
+            val = fields[k]
+            if val is None or val == "":
+                if k == "rate_limit_rpm":
+                    continue
+                setattr(t, k, None)
+            else:
+                iv = int(val)
+                if k == "top_k" and not 1 <= iv <= 50:
+                    raise AppError("top_k must be 1–50")
+                if k == "return_top_n" and not 1 <= iv <= 20:
+                    raise AppError("return_top_n must be 1–20")
+                if k == "rate_limit_rpm" and iv < 1:
+                    raise AppError("rate_limit_rpm must be ≥ 1")
+                setattr(t, k, iv)
+
+        float_fields = ("temperature", "min_retrieval_score")
+        for k in float_fields:
+            if k not in fields:
+                continue
+            val = fields[k]
+            if val is None or val == "":
+                setattr(t, k, None)
+            else:
+                fv = float(val)
+                if k == "temperature" and not 0.0 <= fv <= 2.0:
+                    raise AppError("temperature must be 0–2")
+                if k == "min_retrieval_score" and not 0.0 <= fv <= 1.0:
+                    raise AppError("min_retrieval_score must be 0–1")
+                setattr(t, k, fv)
+
+        bool_int_fields = ("rerank_enabled", "answer_cache_enabled")
+        for k in bool_int_fields:
+            if k not in fields:
+                continue
+            val = fields[k]
+            if val is None:
+                setattr(t, k, None)
+            else:
+                setattr(t, k, 1 if bool(val) else 0)
+
         t.updated_at = datetime.now(timezone.utc)
         self.db.commit()
         self.db.refresh(t)

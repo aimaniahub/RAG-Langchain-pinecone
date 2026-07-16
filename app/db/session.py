@@ -33,13 +33,18 @@ def get_engine():
                     Path(raw_path).expanduser().resolve().parent.mkdir(
                         parents=True, exist_ok=True
                     )
-        _engine = create_engine(
-            url,
-            pool_pre_ping=True,
-            connect_args=connect_args,
-            pool_size=5 if not url.startswith("sqlite") else 1,
-            max_overflow=10 if not url.startswith("sqlite") else 0,
-        )
+        engine_kwargs: dict = {
+            "pool_pre_ping": True,
+            "connect_args": connect_args,
+        }
+        if url.startswith("sqlite"):
+            # Allow nested requests (admin API + open session) without pool deadlocks
+            engine_kwargs["pool_size"] = 5
+            engine_kwargs["max_overflow"] = 10
+        else:
+            engine_kwargs["pool_size"] = 5
+            engine_kwargs["max_overflow"] = 10
+        _engine = create_engine(url, **engine_kwargs)
         _SessionLocal = sessionmaker(bind=_engine, autoflush=False, autocommit=False)
         # Log scheme only — never log credentials
         scheme = url.split("://", 1)[0] if "://" in url else "unknown"
@@ -54,13 +59,54 @@ def get_session_factory() -> sessionmaker[Session]:
 
 
 def init_db() -> None:
-    """Create tables (dev / SQLite). Production should prefer Alembic."""
+    """Create tables + additive column migrations (SQLite / Postgres)."""
     engine = get_engine()
     # import models so metadata is populated
     from app.db import models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+    _ensure_tenant_rag_columns(engine)
     logger.info("DB tables ensured")
+
+
+def _ensure_tenant_rag_columns(engine) -> None:
+    """Add per-company RAG config columns if missing (no full Alembic required)."""
+    from sqlalchemy import inspect, text
+
+    try:
+        insp = inspect(engine)
+        if "tenants" not in insp.get_table_names():
+            return
+        existing = {c["name"] for c in insp.get_columns("tenants")}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("schema inspect failed: %s", exc)
+        return
+
+    # SQLAlchemy type → portable SQL type for ADD COLUMN
+    needed: dict[str, str] = {
+        "system_prompt": "TEXT",
+        "top_k": "INTEGER",
+        "return_top_n": "INTEGER",
+        "max_context_chars": "INTEGER",
+        "max_question_chars": "INTEGER",
+        "max_chars_per_chunk": "INTEGER",
+        "temperature": "FLOAT",
+        "min_retrieval_score": "FLOAT",
+        "rerank_enabled": "INTEGER",
+        "answer_cache_enabled": "INTEGER",
+        "no_context_message": "TEXT",
+    }
+    missing = [c for c in needed if c not in existing]
+    if not missing:
+        return
+    with engine.begin() as conn:
+        for col in missing:
+            ddl = f"ALTER TABLE tenants ADD COLUMN {col} {needed[col]}"
+            try:
+                conn.execute(text(ddl))
+                logger.info("schema: added tenants.%s", col)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("schema add %s failed: %s", col, exc)
 
 
 def check_db() -> bool:

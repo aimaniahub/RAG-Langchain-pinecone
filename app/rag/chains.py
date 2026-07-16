@@ -13,7 +13,7 @@ from app.rag.prompts import format_qa_prompt, get_system_prompt
 logger = get_logger("rag.chains")
 
 
-def build_llm(model: str | None = None) -> Any:
+def build_llm(model: str | None = None, temperature: float | None = None) -> Any:
     """Build ChatOpenAI pointed at OpenRouter."""
     if not settings.is_openrouter_configured:
         raise NotConfiguredError("OpenRouter")
@@ -24,7 +24,7 @@ def build_llm(model: str | None = None) -> Any:
         model=model or settings.openrouter_model,
         api_key=settings.openrouter_api_key,
         base_url=settings.openrouter_base_url,
-        temperature=settings.llm_temperature,
+        temperature=settings.llm_temperature if temperature is None else temperature,
         timeout=settings.openrouter_timeout_seconds,
         max_retries=0,  # we handle retries ourselves
         default_headers={
@@ -46,12 +46,12 @@ def _is_retryable(exc: BaseException) -> bool:
     return False
 
 
-def _messages(question: str, context: str) -> list[Any]:
+def _messages(question: str, context: str, system_prompt: str | None = None) -> list[Any]:
     from langchain_core.messages import HumanMessage, SystemMessage
 
     user_content = format_qa_prompt(context=context, question=question)
     return [
-        SystemMessage(content=get_system_prompt()),
+        SystemMessage(content=system_prompt or get_system_prompt()),
         HumanMessage(content=user_content),
     ]
 
@@ -70,16 +70,24 @@ def _content_to_text(content: Any) -> str:
     return str(content).strip() if content is not None else ""
 
 
-def run_qa(question: str, context: str, model: str | None = None) -> str:
+def run_qa(
+    question: str,
+    context: str,
+    model: str | None = None,
+    *,
+    system_prompt: str | None = None,
+    temperature: float | None = None,
+    no_context_message: str | None = None,
+) -> str:
     """Invoke OpenRouter with grounded context; return answer text."""
     if not context.strip():
-        return (
+        return no_context_message or (
             "I could not find relevant information in the company knowledge base "
             "for this question."
         )
 
-    llm = build_llm(model=model)
-    messages = _messages(question, context)
+    llm = build_llm(model=model, temperature=temperature)
+    messages = _messages(question, context, system_prompt=system_prompt)
 
     attempts = max(1, settings.openrouter_max_retries + 1)
     last_exc: BaseException | None = None
@@ -117,17 +125,25 @@ def run_qa(question: str, context: str, model: str | None = None) -> str:
     )
 
 
-def stream_qa(question: str, context: str, model: str | None = None):
+def stream_qa(
+    question: str,
+    context: str,
+    model: str | None = None,
+    *,
+    system_prompt: str | None = None,
+    temperature: float | None = None,
+    no_context_message: str | None = None,
+):
     """Yield text chunks from OpenRouter streaming response."""
     if not context.strip():
-        yield (
+        yield no_context_message or (
             "I could not find relevant information in the company knowledge base "
             "for this question."
         )
         return
 
-    llm = build_llm(model=model)
-    messages = _messages(question, context)
+    llm = build_llm(model=model, temperature=temperature)
+    messages = _messages(question, context, system_prompt=system_prompt)
     try:
         for chunk in llm.stream(messages):
             text = _content_to_text(getattr(chunk, "content", None))

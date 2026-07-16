@@ -37,11 +37,25 @@ def _map_error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=500, detail="Internal server error")
 
 
-def _validate_question(body: QueryRequest) -> None:
-    if len(body.question) > settings.max_question_chars:
+def _load_tenant_config(db: Session, principal: Principal):
+    from app.db.models import Tenant
+    from app.models.tenant_config import TenantRagConfig
+
+    if not principal.tenant_id:
+        return TenantRagConfig(default_model=principal.openrouter_model)
+    t = db.get(Tenant, principal.tenant_id)
+    cfg = TenantRagConfig.from_tenant(t)
+    if not cfg.default_model:
+        cfg.default_model = principal.openrouter_model
+    return cfg
+
+
+def _validate_question(body: QueryRequest, max_chars: int | None = None) -> None:
+    limit = max_chars or settings.max_question_chars
+    if len(body.question) > limit:
         raise HTTPException(
             status_code=400,
-            detail=f"Question too long (max {settings.max_question_chars} chars)",
+            detail=f"Question too long (max {limit} chars)",
         )
 
 
@@ -62,7 +76,8 @@ def query_rag(
     db: Session = Depends(get_db),
 ) -> QueryResponse:
     """Tenant-scoped RAG query for client company integrations."""
-    _validate_question(body)
+    tcfg = _load_tenant_config(db, principal)
+    _validate_question(body, tcfg.effective_max_question_chars())
     body = _apply_tenant(body, principal)
     logger.info(
         "POST /query actor=%s tenant=%s ns=%s",
@@ -73,7 +88,8 @@ def query_rag(
     try:
         result = service.query(
             body,
-            model_override=principal.openrouter_model,
+            model_override=principal.openrouter_model or tcfg.default_model,
+            tenant_config=tcfg,
         )
         db.add(
             UsageEvent(
@@ -116,17 +132,22 @@ def query_rag_stream(
     principal: Principal = Depends(require_scopes("query:read")),
     _: None = Depends(rate_limit_dependency("query")),
     service: RAGService = Depends(get_rag_service),
+    db: Session = Depends(get_db),
 ) -> StreamingResponse:
     """SSE stream (feature-flagged). Namespace forced from API key."""
-    _validate_question(body)
+    tcfg = _load_tenant_config(db, principal)
+    _validate_question(body, tcfg.effective_max_question_chars())
     body = _apply_tenant(body, principal)
     if not settings.streaming_enabled:
         raise HTTPException(status_code=400, detail="Streaming disabled")
 
     def event_gen():
         try:
-            # stream path still uses default model in stream_query; patch request ns only
-            for item in service.stream_query(body):
+            for item in service.stream_query(
+                body,
+                model_override=principal.openrouter_model or tcfg.default_model,
+                tenant_config=tcfg,
+            ):
                 yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
             yield 'data: {"event":"done"}\n\n'
         except Exception as exc:  # noqa: BLE001
