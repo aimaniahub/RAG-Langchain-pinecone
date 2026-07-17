@@ -87,7 +87,7 @@ def create_app() -> FastAPI:
             "Client companies integrate with API keys. "
             "Operators manage tenants, keys, models, and documents in Admin."
         ),
-        version="1.2.0",
+        version="1.3.0",
         lifespan=lifespan,
         docs_url=settings.docs_url,
         redoc_url=settings.redoc_url,
@@ -166,7 +166,7 @@ def create_app() -> FastAPI:
         return {
             "service": settings.app_name,
             "product": "rag-api-platform",
-            "version": "1.2.0",
+            "version": "1.3.0",
             "mode": settings.product_mode,
             "message": (
                 "Multi-tenant RAG API. Each company has its own namespace, docs, keys, and RAG settings. "

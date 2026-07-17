@@ -35,6 +35,9 @@ class Tenant(Base):
     status: Mapped[str] = mapped_column(String(32), default="active")  # active | disabled
     pinecone_namespace: Mapped[str] = mapped_column(String(128), nullable=False)
     default_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # Per-company OpenRouter (or compatible) LLM key — null = use platform OPENROUTER_API_KEY
+    llm_api_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    llm_base_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     rate_limit_rpm: Mapped[int] = mapped_column(Integer, default=60)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 

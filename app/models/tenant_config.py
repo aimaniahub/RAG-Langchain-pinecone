@@ -22,6 +22,8 @@ class TenantRagConfig:
     answer_cache_enabled: bool | None = None
     no_context_message: str | None = None
     default_model: str | None = None
+    llm_api_key: str | None = None
+    llm_base_url: str | None = None
 
     @classmethod
     def from_tenant(cls, tenant: Any | None) -> TenantRagConfig:
@@ -29,6 +31,8 @@ class TenantRagConfig:
             return cls()
         rerank = getattr(tenant, "rerank_enabled", None)
         cache = getattr(tenant, "answer_cache_enabled", None)
+        key = getattr(tenant, "llm_api_key", None)
+        base = getattr(tenant, "llm_base_url", None)
         return cls(
             system_prompt=(getattr(tenant, "system_prompt", None) or None),
             top_k=getattr(tenant, "top_k", None),
@@ -42,6 +46,8 @@ class TenantRagConfig:
             answer_cache_enabled=None if cache is None else bool(cache),
             no_context_message=(getattr(tenant, "no_context_message", None) or None),
             default_model=getattr(tenant, "default_model", None),
+            llm_api_key=(str(key).strip() if key else None) or None,
+            llm_base_url=(str(base).strip() if base else None) or None,
         )
 
     def effective_top_k(self) -> int:
@@ -94,6 +100,31 @@ class TenantRagConfig:
             "for this question."
         )
 
+    def effective_model(self) -> str:
+        return (self.default_model or settings.openrouter_model or "").strip()
+
+    def effective_llm_api_key(self) -> str:
+        if self.llm_api_key and self.llm_api_key.strip():
+            return self.llm_api_key.strip()
+        return (settings.openrouter_api_key or "").strip()
+
+    def effective_llm_base_url(self) -> str:
+        if self.llm_base_url and self.llm_base_url.strip():
+            return self.llm_base_url.strip()
+        return (settings.openrouter_base_url or "https://openrouter.ai/api/v1").strip()
+
+    def has_llm_credentials(self) -> bool:
+        return bool(self.effective_llm_api_key())
+
+    def llm_key_hint(self) -> str | None:
+        k = self.llm_api_key
+        if not k:
+            return None
+        k = k.strip()
+        if len(k) <= 8:
+            return "••••" + k[-2:]
+        return k[:4] + "…" + k[-4:]
+
     def to_api_dict(self) -> dict[str, Any]:
         return {
             "system_prompt": self.system_prompt,
@@ -107,6 +138,11 @@ class TenantRagConfig:
             "rerank_enabled": self.rerank_enabled,
             "answer_cache_enabled": self.answer_cache_enabled,
             "no_context_message": self.no_context_message,
+            "default_model": self.default_model,
+            "llm_api_key_set": bool(self.llm_api_key),
+            "llm_api_key_hint": self.llm_key_hint(),
+            "llm_base_url": self.llm_base_url,
+            "uses_platform_llm_key": not bool(self.llm_api_key),
             "defaults": {
                 "top_k": settings.retrieve_top_k or settings.top_k,
                 "return_top_n": settings.return_top_n,
@@ -118,5 +154,6 @@ class TenantRagConfig:
                 "rerank_enabled": settings.rerank_enabled,
                 "answer_cache_enabled": settings.answer_cache_enabled,
                 "default_model": settings.openrouter_model,
+                "llm_base_url": settings.openrouter_base_url,
             },
         }

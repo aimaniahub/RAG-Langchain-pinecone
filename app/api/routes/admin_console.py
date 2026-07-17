@@ -40,6 +40,12 @@ def _tenant_dict(t) -> dict:
             return None
         return bool(v)
 
+    key = getattr(t, "llm_api_key", None) or ""
+    key = str(key).strip()
+    key_hint = None
+    if key:
+        key_hint = (key[:4] + "…" + key[-4:]) if len(key) > 8 else "••••" + key[-2:]
+
     return {
         "id": t.id,
         "name": t.name,
@@ -47,6 +53,10 @@ def _tenant_dict(t) -> dict:
         "status": t.status,
         "pinecone_namespace": t.pinecone_namespace,
         "default_model": t.default_model,
+        "llm_api_key_set": bool(key),
+        "llm_api_key_hint": key_hint,
+        "llm_base_url": getattr(t, "llm_base_url", None),
+        "uses_platform_llm_key": not bool(key),
         "rate_limit_rpm": t.rate_limit_rpm,
         "notes": t.notes,
         "system_prompt": getattr(t, "system_prompt", None),
@@ -306,6 +316,9 @@ class UpdateTenantBody(BaseModel):
     name: str | None = None
     status: str | None = None
     default_model: str | None = None
+    # Company OpenRouter key (null/empty clears → use platform OPENROUTER_API_KEY)
+    llm_api_key: str | None = None
+    llm_base_url: str | None = None
     rate_limit_rpm: int | None = None
     notes: str | None = None
     # Per-company RAG overrides (null clears override → platform default)
@@ -665,6 +678,72 @@ async def upload_for_tenant(
         }
     except Exception as exc:  # noqa: BLE001
         raise _err(exc) from exc
+
+
+@router.post("/admin/tenants/{tenant_id}/documents/bulk")
+async def bulk_upload_for_tenant(
+    tenant_id: str,
+    files: list[UploadFile] = File(..., description="Multiple PDF/MD/TXT files"),
+    principal: Principal = Depends(require_platform_admin()),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Bulk upload + embed many files for one company (isolated namespace)."""
+    t = AdminService(db).get_tenant(tenant_id)
+    if not t:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided")
+    if len(files) > 40:
+        raise HTTPException(status_code=400, detail="Max 40 files per bulk upload")
+
+    svc = DocumentService(db)
+    results: list[dict] = []
+    ok = 0
+    failed = 0
+    for f in files:
+        name = f.filename or "upload.bin"
+        try:
+            data = await f.read()
+            doc = svc.upload(
+                filename=name,
+                data=data,
+                content_type=f.content_type or "application/octet-stream",
+                namespace=t.pinecone_namespace,
+                uploaded_by=principal.key_name,
+                process_now=True,
+                tenant_id=t.id,
+            )
+            results.append(
+                {
+                    "filename": name,
+                    "status": "ok",
+                    "document": _doc_dict(doc),
+                }
+            )
+            ok += 1
+        except Exception as exc:  # noqa: BLE001
+            failed += 1
+            results.append(
+                {
+                    "filename": name,
+                    "status": "failed",
+                    "error": str(exc)[:300],
+                }
+            )
+
+    return {
+        "status": "ok" if failed == 0 else "partial",
+        "tenant_id": t.id,
+        "pinecone_namespace": t.pinecone_namespace,
+        "total": len(files),
+        "succeeded": ok,
+        "failed": failed,
+        "items": results,
+        "message": (
+            f"Bulk embed finished for {t.name}: {ok} ok, {failed} failed "
+            f"(namespace {t.pinecone_namespace})."
+        ),
+    }
 
 
 @router.post("/admin/documents/{document_id}/reprocess")

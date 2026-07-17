@@ -85,7 +85,9 @@ class RAGService:
             if request.include_timings is None
             else request.include_timings
         )
-        llm_model = model_override or cfg.default_model or settings.openrouter_model
+        llm_model = model_override or cfg.effective_model() or settings.openrouter_model
+        llm_key = cfg.effective_llm_api_key()
+        llm_base = cfg.effective_llm_base_url()
         cache_hit = "none"
         no_ctx = cfg.effective_no_context()
         use_answer_cache = cfg.effective_answer_cache()
@@ -93,6 +95,10 @@ class RAGService:
 
         if not settings.is_pinecone_configured:
             raise NotConfiguredError("Pinecone")
+        if not llm_key:
+            raise NotConfiguredError(
+                "OpenRouter (set company LLM API key or platform OPENROUTER_API_KEY)"
+            )
 
         logger.info(
             "query retrieve_k=%s return_n=%s model=%s ns=%s tenant=%s rerank=%s",
@@ -190,10 +196,7 @@ class RAGService:
             ctx_chars = len(context)
             ctx_tokens = estimate_tokens(context)
 
-        if not settings.is_openrouter_configured:
-            raise NotConfiguredError("OpenRouter")
-
-        # ---- LLM ----
+        # ---- LLM (company key or platform key) ----
         with timer.measure("llm"):
             answer = run_qa(
                 question=question,
@@ -202,6 +205,8 @@ class RAGService:
                 system_prompt=cfg.effective_system_prompt(),
                 temperature=cfg.effective_temperature(),
                 no_context_message=no_ctx,
+                api_key=llm_key,
+                base_url=llm_base,
             )
 
         timer.stop("total")
@@ -266,12 +271,18 @@ class RAGService:
             )
         retrieve_k = request.top_k or cfg.effective_top_k()
         return_n = cfg.effective_return_top_n()
-        llm_model = model_override or cfg.default_model or settings.openrouter_model
+        llm_model = model_override or cfg.effective_model() or settings.openrouter_model
+        llm_key = cfg.effective_llm_api_key()
+        llm_base = cfg.effective_llm_base_url()
         no_ctx = cfg.effective_no_context()
         use_rerank = cfg.effective_rerank()
 
         if not settings.is_pinecone_configured:
             raise NotConfiguredError("Pinecone")
+        if not llm_key:
+            raise NotConfiguredError(
+                "OpenRouter (set company LLM API key or platform OPENROUTER_API_KEY)"
+            )
 
         yield {"event": "stage", "stage": "embed", "status": "start"}
         with timer.measure("embed"):
@@ -349,9 +360,6 @@ class RAGService:
             "tokens_est": estimate_tokens(context),
         }
 
-        if not settings.is_openrouter_configured:
-            raise NotConfiguredError("OpenRouter")
-
         yield {"event": "stage", "stage": "llm", "status": "start"}
         answer_parts: list[str] = []
         with timer.measure("llm"):
@@ -362,6 +370,8 @@ class RAGService:
                 system_prompt=cfg.effective_system_prompt(),
                 temperature=cfg.effective_temperature(),
                 no_context_message=no_ctx,
+                api_key=llm_key,
+                base_url=llm_base,
             ):
                 answer_parts.append(token)
                 yield {"event": "token", "text": token}

@@ -597,6 +597,44 @@
       <p class="muted" style="margin-top:0">Empty fields use platform defaults. Saved to Postgres for this company only.</p>
 
       <div class="settings-section">
+        <h4>AI model &amp; API key</h4>
+        <p class="sec-desc">
+          Platform default uses env <code>OPENROUTER_API_KEY</code>. Override per company for a separate OpenRouter key and model.
+        </p>
+        <div class="form-grid">
+          <label class="field">
+            <span>OpenRouter model id</span>
+            <input id="cfgModel" value="${esc(t.default_model || "")}" placeholder="${esc(
+              defs.default_model || "openai/gpt-4o-mini"
+            )}" />
+            <span class="hint">Example: openai/gpt-4o-mini · empty = platform default</span>
+          </label>
+          <label class="field">
+            <span>LLM base URL (optional)</span>
+            <input id="cfgLlmBase" value="${esc(t.llm_base_url || "")}" placeholder="https://openrouter.ai/api/v1" />
+          </label>
+        </div>
+        <label class="field" style="margin-top:10px">
+          <span>Company OpenRouter API key</span>
+          <input id="cfgLlmKey" type="password" autocomplete="off" placeholder="${
+            t.llm_api_key_set
+              ? "Key set (" + esc(t.llm_api_key_hint || "••••") + ") — paste new to replace"
+              : "Empty = use platform OPENROUTER_API_KEY"
+          }" />
+          <span class="hint">
+            ${
+              t.llm_api_key_set
+                ? "Using company key " + esc(t.llm_api_key_hint || "") + ". Leave blank and save to keep. Clear with Clear LLM key."
+                : "Currently using platform key from env."
+            }
+          </span>
+        </label>
+        <div class="form-row" style="margin-top:8px">
+          <button type="button" class="btn sm" id="btnClearLlmKey"><span class="btn-label">Clear company LLM key</span></button>
+        </div>
+      </div>
+
+      <div class="settings-section">
         <h4>System prompt</h4>
         <p class="sec-desc">Instructions the LLM always follows for this company.</p>
         <label class="field">
@@ -719,6 +757,31 @@
       </div>
     `;
 
+    $("btnClearLlmKey").onclick = async () => {
+      const ok = await confirmAction(
+        "Clear company LLM key?",
+        "This company will use the platform OPENROUTER_API_KEY from env again.",
+        "Clear key"
+      );
+      if (!ok) return;
+      try {
+        await req(`/admin/tenants/${t.id}/rag-settings`, {
+          method: "PUT",
+          headers: headers(true),
+          body: JSON.stringify({ llm_api_key: null }),
+        });
+        await notifySuccess("LLM key cleared", "Platform OpenRouter key will be used.");
+        await openDesk(t.id, false);
+        state.deskTab = "settings";
+        document.querySelectorAll(".desk-tab").forEach((x) => {
+          x.classList.toggle("active", x.dataset.tab === "settings");
+        });
+        renderDesk();
+      } catch (e) {
+        await notifyError("Clear failed", e.message);
+      }
+    };
+
     $("btnSaveRag").onclick = async () => {
       const btn = $("btnSaveRag");
       setBtnLoading(btn, true, "Saving…");
@@ -732,6 +795,8 @@
           system_prompt: $("cfgPrompt").value || null,
           no_context_message: $("cfgNoCtx").value || null,
           notes: $("cfgNotes").value || null,
+          default_model: $("cfgModel").value || null,
+          llm_base_url: $("cfgLlmBase").value || null,
           top_k: num("cfgTopK"),
           return_top_n: num("cfgReturnN"),
           min_retrieval_score: num("cfgMinScore"),
@@ -743,6 +808,8 @@
           rerank_enabled: $("cfgRerank").checked,
           answer_cache_enabled: $("cfgCache").checked,
         };
+        const keyVal = ($("cfgLlmKey").value || "").trim();
+        if (keyVal) body.llm_api_key = keyVal;
         await req(`/admin/tenants/${t.id}/rag-settings`, {
           method: "PUT",
           headers: headers(true),
@@ -750,7 +817,7 @@
         });
         await notifySuccess(
           "Settings saved",
-          `RAG configuration for ${t.name} is stored in Postgres and applies to the next API queries.`
+          `RAG + AI model config for ${t.name} is stored. Next queries use this company's model/key when set.`
         );
         await openDesk(t.id, false);
         state.deskTab = "settings";
@@ -917,12 +984,14 @@
         </p>
       </div>
       <div class="form-row">
-        <label class="field grow"><span>Upload PDF / MD / TXT</span>
-          <input type="file" id="deskFile" accept=".pdf,.md,.txt,.markdown" />
+        <label class="field grow"><span>Upload files (multi-select bulk)</span>
+          <input type="file" id="deskFile" accept=".pdf,.md,.txt,.markdown" multiple />
         </label>
         <button type="button" class="btn primary" id="deskUpload"><span class="btn-label">Upload &amp; embed</span></button>
         <button type="button" class="btn" id="deskReindex"><span class="btn-label">Reindex all</span></button>
       </div>
+      <p class="muted" style="margin:8px 0 0;font-size:.82rem">Select many PDFs/MD/TXT — each embeds into this company namespace only.</p>
+      <div id="bulkProgress" class="muted hidden" style="margin-top:8px"></div>
       <div class="table-wrap" style="margin-top:12px">
         <table>
           <thead><tr><th>File</th><th>Status</th><th>Vectors</th><th></th></tr></thead>
@@ -950,34 +1019,47 @@
         </table>
       </div>`;
     $("deskUpload").onclick = async () => {
-      const f = $("deskFile").files?.[0];
-      if (!f) {
-        await notifyError("No file", "Choose a PDF, Markdown, or text file first.");
+      const list = $("deskFile").files;
+      if (!list || !list.length) {
+        await notifyError("No files", "Choose one or more PDF, Markdown, or text files.");
         return;
       }
       const btn = $("deskUpload");
-      setBtnLoading(btn, true, "Uploading…");
-      const fd = new FormData();
-      fd.append("file", f);
+      const prog = $("bulkProgress");
+      setBtnLoading(btn, true, list.length > 1 ? `Embedding 0/${list.length}…` : "Uploading…");
+      prog.classList.remove("hidden");
+      prog.textContent = `Starting bulk upload (${list.length} file(s))…`;
       pushBusy(1);
       try {
-        const r = await fetch(api + `/admin/tenants/${t.id}/documents`, {
+        const fd = new FormData();
+        for (let i = 0; i < list.length; i++) {
+          fd.append("files", list[i]);
+        }
+        // Single file still uses bulk endpoint for consistent path
+        const r = await fetch(api + `/admin/tenants/${t.id}/documents/bulk`, {
           method: "POST",
           headers: headers(false),
           body: fd,
         });
         const d = await r.json();
         if (!r.ok) throw new Error(formatError(d.detail || d.message, "upload failed"));
-        const iso = d.isolation
-          ? `\nNamespace: ${d.isolation.pinecone_namespace}`
-          : "";
+        const failedItems = (d.items || []).filter((x) => x.status === "failed");
+        prog.textContent = d.message || `Done: ${d.succeeded}/${d.total}`;
+        let msg = d.message || `Uploaded ${d.succeeded}/${d.total}`;
+        if (failedItems.length) {
+          msg +=
+            "\n\nFailed:\n" +
+            failedItems.map((x) => `• ${x.filename}: ${x.error || "error"}`).join("\n");
+        }
+        msg += `\nNamespace: ${d.pinecone_namespace || t.pinecone_namespace}`;
         await notifySuccess(
-          "Document uploaded",
-          `${d.document?.filename || f.name} — status: ${d.document?.status || "uploaded"}.${iso}`
+          d.failed ? "Bulk upload partial" : "Bulk upload complete",
+          msg
         );
         await openDesk(t.id);
         refresh();
       } catch (e) {
+        prog.textContent = "Failed: " + e.message;
         await notifyError("Upload failed", e.message);
       } finally {
         pushBusy(-1);
@@ -1048,29 +1130,81 @@
     const t = state.desk.tenant;
     const el = $("tab-models");
     el.innerHTML = `
-      <label class="field"><span>LLM for this company (OpenRouter model id)</span>
-        <input id="deskModel" value="${esc(t.default_model || "")}" placeholder="openai/gpt-4o-mini" />
-      </label>
-      <button type="button" class="btn primary" id="deskSaveModel" style="margin-top:10px">
-        <span class="btn-label">Save model</span>
-      </button>
-      <p class="muted" style="margin-top:10px">Queries for this tenant use this model when set.</p>`;
+      <div class="settings-section">
+        <h4>Company AI (OpenRouter)</h4>
+        <p class="sec-desc">Each company can use its own model id and API key. Empty key = platform env key.</p>
+        <label class="field"><span>Model id</span>
+          <input id="deskModel" value="${esc(t.default_model || "")}" placeholder="openai/gpt-4o-mini" />
+        </label>
+        <label class="field" style="margin-top:10px"><span>LLM base URL (optional)</span>
+          <input id="deskLlmBase" value="${esc(t.llm_base_url || "")}" placeholder="https://openrouter.ai/api/v1" />
+        </label>
+        <label class="field" style="margin-top:10px"><span>OpenRouter API key for this company</span>
+          <input id="deskLlmKey" type="password" autocomplete="off" placeholder="${
+            t.llm_api_key_set
+              ? "Key set (" + esc(t.llm_api_key_hint || "") + ") — paste new to replace"
+              : "Leave empty to use platform OPENROUTER_API_KEY"
+          }" />
+        </label>
+        <div class="form-row" style="margin-top:12px">
+          <button type="button" class="btn primary" id="deskSaveModel">
+            <span class="btn-label">Save AI model &amp; key</span>
+          </button>
+          <button type="button" class="btn" id="deskClearKey">
+            <span class="btn-label">Clear company key</span>
+          </button>
+        </div>
+        <p class="muted" style="margin-top:10px">
+          Status: ${
+            t.llm_api_key_set
+              ? "Using <strong>company</strong> key " + esc(t.llm_api_key_hint || "")
+              : "Using <strong>platform</strong> OPENROUTER_API_KEY"
+          }
+        </p>
+      </div>`;
     $("deskSaveModel").onclick = async () => {
       const btn = $("deskSaveModel");
       setBtnLoading(btn, true, "Saving…");
       try {
-        await req(`/admin/tenants/${t.id}/models`, {
-          method: "PATCH",
+        const body = {
+          default_model: $("deskModel").value || null,
+          llm_base_url: $("deskLlmBase").value || null,
+        };
+        const k = ($("deskLlmKey").value || "").trim();
+        if (k) body.llm_api_key = k;
+        await req(`/admin/tenants/${t.id}/rag-settings`, {
+          method: "PUT",
           headers: headers(true),
-          body: JSON.stringify({ model_id: $("deskModel").value }),
+          body: JSON.stringify(body),
         });
-        await notifySuccess("Model updated", `Default model for ${t.name} saved.`);
+        await notifySuccess("AI config saved", `Model/key for ${t.name} updated.`);
         await openDesk(t.id);
         refresh();
       } catch (e) {
         await notifyError("Save failed", e.message);
       } finally {
         setBtnLoading(btn, false);
+      }
+    };
+    $("deskClearKey").onclick = async () => {
+      if (
+        !(await confirmAction(
+          "Clear company LLM key?",
+          "Fall back to platform OPENROUTER_API_KEY.",
+          "Clear"
+        ))
+      )
+        return;
+      try {
+        await req(`/admin/tenants/${t.id}/rag-settings`, {
+          method: "PUT",
+          headers: headers(true),
+          body: JSON.stringify({ llm_api_key: null }),
+        });
+        await notifySuccess("Key cleared", "Platform key will be used.");
+        await openDesk(t.id);
+      } catch (e) {
+        await notifyError("Clear failed", e.message);
       }
     };
   }

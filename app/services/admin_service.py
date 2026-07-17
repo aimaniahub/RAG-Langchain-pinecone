@@ -365,12 +365,26 @@ class AdminService:
         t = self.get_tenant(tenant_id)
         if not t:
             raise AppError("Tenant not found")
-        str_fields = ("name", "status", "default_model", "notes", "system_prompt", "no_context_message")
+        str_fields = (
+            "name",
+            "status",
+            "default_model",
+            "notes",
+            "system_prompt",
+            "no_context_message",
+            "llm_base_url",
+        )
         for k in str_fields:
             if k not in fields:
                 continue
             val = fields[k]
-            if k in {"system_prompt", "no_context_message", "notes", "default_model"}:
+            if k in {
+                "system_prompt",
+                "no_context_message",
+                "notes",
+                "default_model",
+                "llm_base_url",
+            }:
                 # allow explicit null/empty to clear override
                 if val is None or (isinstance(val, str) and not val.strip()):
                     setattr(t, k, None if k != "name" else t.name)
@@ -378,6 +392,18 @@ class AdminService:
                     setattr(t, k, str(val).strip() if k != "system_prompt" else str(val))
             elif val is not None:
                 setattr(t, k, val)
+
+        # LLM API key: never echo; empty/null clears; "KEEP" / masked placeholder skips
+        if "llm_api_key" in fields:
+            raw = fields["llm_api_key"]
+            if raw is None or (isinstance(raw, str) and not raw.strip()):
+                t.llm_api_key = None
+            else:
+                s = str(raw).strip()
+                if s in {"KEEP", "********", "••••••••"} or s.startswith("••••"):
+                    pass  # leave existing
+                else:
+                    t.llm_api_key = s
 
         int_fields = (
             "rate_limit_rpm",

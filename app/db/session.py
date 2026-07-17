@@ -95,6 +95,8 @@ def _ensure_tenant_rag_columns(engine) -> None:
         "rerank_enabled": "INTEGER",
         "answer_cache_enabled": "INTEGER",
         "no_context_message": "TEXT",
+        "llm_api_key": "TEXT",
+        "llm_base_url": "TEXT",
     }
     missing = [c for c in needed if c not in existing]
     if not missing:

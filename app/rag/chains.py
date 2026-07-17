@@ -13,17 +13,25 @@ from app.rag.prompts import format_qa_prompt, get_system_prompt
 logger = get_logger("rag.chains")
 
 
-def build_llm(model: str | None = None, temperature: float | None = None) -> Any:
-    """Build ChatOpenAI pointed at OpenRouter."""
-    if not settings.is_openrouter_configured:
+def build_llm(
+    model: str | None = None,
+    temperature: float | None = None,
+    *,
+    api_key: str | None = None,
+    base_url: str | None = None,
+) -> Any:
+    """Build ChatOpenAI pointed at OpenRouter (or tenant override key/url)."""
+    key = (api_key or settings.openrouter_api_key or "").strip()
+    if not key:
         raise NotConfiguredError("OpenRouter")
 
     from langchain_openai import ChatOpenAI
 
     return ChatOpenAI(
         model=model or settings.openrouter_model,
-        api_key=settings.openrouter_api_key,
-        base_url=settings.openrouter_base_url,
+        api_key=key,
+        base_url=(base_url or settings.openrouter_base_url or "").strip()
+        or "https://openrouter.ai/api/v1",
         temperature=settings.llm_temperature if temperature is None else temperature,
         timeout=settings.openrouter_timeout_seconds,
         max_retries=0,  # we handle retries ourselves
@@ -78,6 +86,8 @@ def run_qa(
     system_prompt: str | None = None,
     temperature: float | None = None,
     no_context_message: str | None = None,
+    api_key: str | None = None,
+    base_url: str | None = None,
 ) -> str:
     """Invoke OpenRouter with grounded context; return answer text."""
     if not context.strip():
@@ -86,7 +96,9 @@ def run_qa(
             "for this question."
         )
 
-    llm = build_llm(model=model, temperature=temperature)
+    llm = build_llm(
+        model=model, temperature=temperature, api_key=api_key, base_url=base_url
+    )
     messages = _messages(question, context, system_prompt=system_prompt)
 
     attempts = max(1, settings.openrouter_max_retries + 1)
@@ -133,6 +145,8 @@ def stream_qa(
     system_prompt: str | None = None,
     temperature: float | None = None,
     no_context_message: str | None = None,
+    api_key: str | None = None,
+    base_url: str | None = None,
 ):
     """Yield text chunks from OpenRouter streaming response."""
     if not context.strip():
@@ -142,7 +156,9 @@ def stream_qa(
         )
         return
 
-    llm = build_llm(model=model, temperature=temperature)
+    llm = build_llm(
+        model=model, temperature=temperature, api_key=api_key, base_url=base_url
+    )
     messages = _messages(question, context, system_prompt=system_prompt)
     try:
         for chunk in llm.stream(messages):
