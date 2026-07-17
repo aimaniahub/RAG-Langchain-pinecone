@@ -43,8 +43,19 @@ def ingest_documents(
     service: IngestService = Depends(get_ingest_service),
 ) -> IngestResponse:
     """Ingest texts into the caller's tenant namespace."""
+    if settings.auth_enabled and not principal.tenant_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Company API key required for ingest (platform admin uses Admin UI upload).",
+        )
     data = body.model_dump()
     data["namespace"] = principal.namespace
+    meta = dict(data.get("metadata") or {})
+    if principal.tenant_id:
+        meta["tenant_id"] = principal.tenant_id
+        if principal.tenant_slug:
+            meta["tenant_slug"] = principal.tenant_slug
+    data["metadata"] = meta
     body = IngestRequest(**data)
     logger.info(
         "POST /ingest actor=%s tenant=%s texts=%s",
@@ -77,6 +88,11 @@ async def ingest_file(
     service: IngestService = Depends(get_ingest_service),
 ) -> IngestResponse:
     """Multipart file ingest into tenant namespace."""
+    if settings.auth_enabled and not principal.tenant_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Company API key required for ingest (platform admin uses Admin UI upload).",
+        )
     filename = file.filename or "upload.bin"
     meta: dict[str, Any] = {}
     if metadata_json:
@@ -86,6 +102,11 @@ async def ingest_file(
                 meta = parsed
         except json.JSONDecodeError as exc:
             raise HTTPException(status_code=400, detail=f"Invalid metadata_json: {exc}") from exc
+
+    if principal.tenant_id:
+        meta["tenant_id"] = principal.tenant_id
+        if principal.tenant_slug:
+            meta["tenant_slug"] = principal.tenant_slug
 
     data = await file.read()
     if not data:

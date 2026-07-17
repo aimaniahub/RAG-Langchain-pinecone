@@ -59,11 +59,53 @@ def _validate_question(body: QueryRequest, max_chars: int | None = None) -> None
         )
 
 
-def _apply_tenant(body: QueryRequest, principal: Principal) -> QueryRequest:
-    """Force namespace from API key tenant (clients cannot escape isolation)."""
+def _require_company_key(principal: Principal) -> None:
+    """Client chat must use a company (tenant) API key — never platform admin alone."""
+    if not settings.auth_enabled:
+        return
+    if principal.tenant_id:
+        return
+    raise HTTPException(
+        status_code=403,
+        detail=(
+            "Company API key required for /query. "
+            "Platform admin keys are for /admin only. "
+            "Issue a key under Admin → Companies → API keys and use that in the chat app."
+        ),
+    )
+
+
+def _apply_tenant(
+    body: QueryRequest, principal: Principal, db: Session
+) -> tuple[QueryRequest, str | None]:
+    """Force namespace from Postgres company row (never trust client body)."""
+    from app.db.models import Tenant
+
     data = body.model_dump()
-    data["namespace"] = principal.namespace
-    return QueryRequest(**data)
+    ns = (principal.namespace or "").strip()
+    tenant_id = principal.tenant_id
+
+    if tenant_id:
+        t = db.get(Tenant, tenant_id)
+        if not t:
+            raise HTTPException(status_code=403, detail="Company not found for this API key")
+        if t.status != "active":
+            raise HTTPException(status_code=403, detail="Company is disabled")
+        ns = (t.pinecone_namespace or "").strip()
+        if not ns:
+            raise HTTPException(
+                status_code=500,
+                detail="Company has no pinecone_namespace configured",
+            )
+
+    if not ns and settings.auth_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="API key is not linked to a company namespace",
+        )
+
+    data["namespace"] = ns or (settings.pinecone_namespace or "default")
+    return QueryRequest(**data), tenant_id
 
 
 @router.post("/query", response_model=QueryResponse)
@@ -76,20 +118,22 @@ def query_rag(
     db: Session = Depends(get_db),
 ) -> QueryResponse:
     """Tenant-scoped RAG query for client company integrations."""
+    _require_company_key(principal)
     tcfg = _load_tenant_config(db, principal)
     _validate_question(body, tcfg.effective_max_question_chars())
-    body = _apply_tenant(body, principal)
+    body, tenant_id = _apply_tenant(body, principal, db)
     logger.info(
         "POST /query actor=%s tenant=%s ns=%s",
         principal.key_name,
-        principal.tenant_id,
-        principal.namespace,
+        tenant_id,
+        body.namespace,
     )
     try:
         result = service.query(
             body,
             model_override=principal.openrouter_model or tcfg.default_model,
             tenant_config=tcfg,
+            tenant_id=tenant_id,
         )
         db.add(
             UsageEvent(
@@ -134,10 +178,11 @@ def query_rag_stream(
     service: RAGService = Depends(get_rag_service),
     db: Session = Depends(get_db),
 ) -> StreamingResponse:
-    """SSE stream (feature-flagged). Namespace forced from API key."""
+    """SSE stream (feature-flagged). Namespace forced from company key."""
+    _require_company_key(principal)
     tcfg = _load_tenant_config(db, principal)
     _validate_question(body, tcfg.effective_max_question_chars())
-    body = _apply_tenant(body, principal)
+    body, tenant_id = _apply_tenant(body, principal, db)
     if not settings.streaming_enabled:
         raise HTTPException(status_code=400, detail="Streaming disabled")
 
@@ -147,6 +192,7 @@ def query_rag_stream(
                 body,
                 model_override=principal.openrouter_model or tcfg.default_model,
                 tenant_config=tcfg,
+                tenant_id=tenant_id,
             ):
                 yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
             yield 'data: {"event":"done"}\n\n'

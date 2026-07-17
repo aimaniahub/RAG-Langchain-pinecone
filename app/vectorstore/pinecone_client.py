@@ -119,25 +119,60 @@ class PineconeClient:
         vector: list[float],
         top_k: int | None = None,
         namespace: str | None = None,
+        *,
+        tenant_id: str | None = None,
+        metadata_filter: dict[str, Any] | None = None,
     ) -> list[RetrievalResult]:
-        """Similarity search; returns content from metadata.text."""
+        """Similarity search; returns content from metadata.text.
+
+        Always pass company namespace. Prefer tenant_id filter so vectors from
+        another company never leak even if a namespace was misconfigured.
+        """
         k = top_k or settings.top_k
-        ns = namespace or self.namespace
+        ns = (namespace or self.namespace or "").strip() or "default"
         index = self._get_index()
 
+        flt: dict[str, Any] | None = dict(metadata_filter) if metadata_filter else None
+        if tenant_id:
+            tid_filter = {"tenant_id": {"$eq": str(tenant_id)}}
+            flt = {**(flt or {}), **tid_filter}
+
         try:
-            result = index.query(
-                vector=vector,
-                top_k=k,
-                namespace=ns,
-                include_metadata=True,
-            )
+            kwargs: dict[str, Any] = {
+                "vector": vector,
+                "top_k": k,
+                "namespace": ns,
+                "include_metadata": True,
+            }
+            if flt:
+                kwargs["filter"] = flt
+            result = index.query(**kwargs)
         except Exception as exc:  # noqa: BLE001
-            logger.exception("Pinecone query failed")
-            raise UpstreamError(
-                f"Pinecone query failed: {exc}",
-                provider="pinecone",
-            ) from exc
+            # Older indexes may lack tenant_id on all vectors — retry without filter
+            if flt and tenant_id:
+                logger.warning(
+                    "pinecone query with tenant filter failed (%s); retry ns-only",
+                    str(exc)[:120],
+                )
+                try:
+                    result = index.query(
+                        vector=vector,
+                        top_k=k,
+                        namespace=ns,
+                        include_metadata=True,
+                    )
+                except Exception as exc2:  # noqa: BLE001
+                    logger.exception("Pinecone query failed")
+                    raise UpstreamError(
+                        f"Pinecone query failed: {exc2}",
+                        provider="pinecone",
+                    ) from exc2
+            else:
+                logger.exception("Pinecone query failed")
+                raise UpstreamError(
+                    f"Pinecone query failed: {exc}",
+                    provider="pinecone",
+                ) from exc
 
         matches = getattr(result, "matches", None)
         if matches is None and isinstance(result, dict):
@@ -154,11 +189,50 @@ class PineconeClient:
                 raw_meta = getattr(match, "metadata", None) or {}
                 meta = dict(raw_meta)
 
+            # Drop any accidental cross-tenant hit if filter was skipped
+            if tenant_id and meta.get("tenant_id") and str(meta.get("tenant_id")) != str(tenant_id):
+                continue
+
             content = str(meta.pop("text", "") or "")
             hits.append(RetrievalResult(content=content, score=score, metadata=meta))
 
-        logger.info("pinecone query: top_k=%s ns=%s hits=%s", k, ns, len(hits))
+        logger.info(
+            "pinecone query: top_k=%s ns=%s tenant=%s hits=%s",
+            k,
+            ns,
+            (tenant_id or "-")[:8],
+            len(hits),
+        )
         return hits
+
+    def delete_vectors(
+        self,
+        *,
+        namespace: str,
+        document_id: str | None = None,
+        tenant_id: str | None = None,
+        ids: list[str] | None = None,
+    ) -> None:
+        """Delete vectors for a document or by ids inside a company namespace."""
+        ns = (namespace or "").strip() or "default"
+        index = self._get_index()
+        try:
+            if ids:
+                index.delete(ids=ids, namespace=ns)
+                logger.info("pinecone delete ids=%s ns=%s", len(ids), ns)
+                return
+            flt: dict[str, Any] = {}
+            if document_id:
+                flt["document_id"] = {"$eq": str(document_id)}
+            if tenant_id:
+                flt["tenant_id"] = {"$eq": str(tenant_id)}
+            if not flt:
+                logger.warning("pinecone delete skipped: no filter/ids")
+                return
+            index.delete(filter=flt, namespace=ns)
+            logger.info("pinecone delete filter=%s ns=%s", flt, ns)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("pinecone delete failed ns=%s: %s", ns, exc)
 
     def ensure_index(self, dimension: int | None = None) -> dict[str, Any]:
         """Create serverless index if it does not exist (dev helper)."""

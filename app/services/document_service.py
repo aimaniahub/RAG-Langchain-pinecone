@@ -75,20 +75,29 @@ class DocumentService:
             raise IngestError(f"Unsupported type {suffix}. Allowed: {sorted(ALLOWED_SUFFIXES)}")
 
         doc_id = str(uuid.uuid4())
-        ns = namespace or settings.pinecone_namespace or "default"
-        safe_name = Path(filename).name.replace(" ", "_")
-        # Company-wise layout in S3/local:
-        #   companies/{tenant_id|slug}/documents/{doc_id}/{filename}
+        # Company isolation: namespace always comes from tenant row when linked
+        tenant_slug: str | None = None
+        ns = (namespace or "").strip()
         folder = tenant_id or "platform"
         if tenant_id:
-            try:
-                from app.db.models import Tenant
+            from app.db.models import Tenant
 
-                t = self.db.get(Tenant, tenant_id)
-                if t and t.slug:
-                    folder = t.slug
-            except Exception:  # noqa: BLE001
-                folder = tenant_id
+            t = self.db.get(Tenant, tenant_id)
+            if not t:
+                raise IngestError("Tenant not found for document upload")
+            if t.status != "active":
+                raise IngestError("Company is disabled — enable it before uploading")
+            ns = (t.pinecone_namespace or "").strip()
+            tenant_slug = t.slug
+            folder = t.slug or tenant_id
+        if not ns:
+            raise IngestError(
+                "Missing Pinecone namespace. Upload docs via a company (Admin → Companies), "
+                "not into a shared default space."
+            )
+        safe_name = Path(filename).name.replace(" ", "_")
+        # Company-wise layout in S3/local:
+        #   companies/{slug}/documents/{doc_id}/{filename}
         storage_key = f"companies/{folder}/documents/{doc_id}/{safe_name}"
 
         self.storage.put_bytes(storage_key, data, content_type=content_type)
@@ -105,6 +114,7 @@ class DocumentService:
             namespace=ns,
             uploaded_by=uploaded_by,
         )
+        _ = tenant_slug  # stamped during process_document
         job = IngestJob(document_id=doc_id, status="pending")
         self.db.add(doc)
         self.db.add(job)
@@ -144,6 +154,19 @@ class DocumentService:
         self.db.commit()
 
         try:
+            # Re-sync namespace from company so reprocess cannot write to a stale NS
+            tenant_slug = ""
+            if doc.tenant_id:
+                from app.db.models import Tenant
+
+                t = self.db.get(Tenant, doc.tenant_id)
+                if not t:
+                    raise IngestError("Document company (tenant) not found")
+                doc.namespace = (t.pinecone_namespace or "").strip()
+                tenant_slug = t.slug or ""
+            if not doc.namespace:
+                raise IngestError("Document has no Pinecone namespace — link it to a company")
+
             raw = self.storage.get_bytes(doc.storage_key)
             chunks = load_from_bytes(
                 doc.filename,
@@ -152,6 +175,9 @@ class DocumentService:
                     "source": doc.filename,
                     "document_id": doc.id,
                     "doc_id": doc.id,
+                    "tenant_id": doc.tenant_id or "",
+                    "tenant_slug": tenant_slug,
+                    "namespace": doc.namespace,
                 },
             )
             split = split_documents(chunks)
@@ -162,10 +188,21 @@ class DocumentService:
                     f"Too many chunks ({len(split)}). Max {settings.max_chunks_per_ingest}."
                 )
 
-            # enrich metadata
+            # enrich metadata — tenant_id is required for cross-company safety
             for c in split:
                 c.metadata["document_id"] = doc.id
+                c.metadata["doc_id"] = doc.id
                 c.metadata["source"] = doc.filename
+                c.metadata["tenant_id"] = doc.tenant_id or ""
+                c.metadata["tenant_slug"] = tenant_slug
+                c.metadata["namespace"] = doc.namespace
+
+            # Drop previous vectors for this document (same NS) before re-upsert
+            self.pinecone_client.delete_vectors(
+                namespace=doc.namespace,
+                document_id=doc.id,
+                tenant_id=doc.tenant_id,
+            )
 
             vectors = self.embedding_service.embed_texts([c.content for c in split])
             result = self.pinecone_client.upsert(
@@ -216,10 +253,20 @@ class DocumentService:
         if not doc:
             raise IngestError("Document not found")
         try:
+            if doc.namespace:
+                self.pinecone_client.delete_vectors(
+                    namespace=doc.namespace,
+                    document_id=doc.id,
+                    tenant_id=doc.tenant_id,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("pinecone delete failed: %s", exc)
+        try:
             self.storage.delete(doc.storage_key)
         except Exception as exc:  # noqa: BLE001
             logger.warning("storage delete failed: %s", exc)
+        ns = doc.namespace
         self.db.query(IngestJob).filter(IngestJob.document_id == document_id).delete()
         self.db.delete(doc)
         self.db.commit()
-        cache_service.bump_generation(doc.namespace)
+        cache_service.bump_generation(ns)

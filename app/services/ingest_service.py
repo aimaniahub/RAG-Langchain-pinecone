@@ -57,13 +57,26 @@ class IngestService:
                 "Split the upload or reduce document size."
             )
 
+        ns = (request.namespace or settings.pinecone_namespace or "").strip()
+        if not ns:
+            raise IngestError(
+                "Missing namespace. Client ingest must use a company API key."
+            )
+        # Stamp tenant metadata if caller put it in request.metadata
+        meta = dict(request.metadata or {})
+        for c in chunks:
+            c.metadata.update({k: v for k, v in meta.items() if k not in c.metadata})
+            c.metadata.setdefault("namespace", ns)
+            if meta.get("tenant_id"):
+                c.metadata["tenant_id"] = str(meta["tenant_id"])
+
         vectors = self.embedding_service.embed_texts([c.content for c in chunks])
         result = self.pinecone_client.upsert(
             chunks=chunks,
             vectors=vectors,
-            namespace=request.namespace,
+            namespace=ns,
         )
-        ns = result.get("namespace") or request.namespace or settings.pinecone_namespace
+        ns = result.get("namespace") or ns
 
         from app.services.cache_service import cache_service
 
@@ -97,7 +110,12 @@ class IngestService:
         if not settings.is_pinecone_configured:
             raise NotConfiguredError("Pinecone")
 
-        docs = load_from_bytes(filename, data, metadata=metadata)
+        ns = (namespace or settings.pinecone_namespace or "").strip()
+        if not ns:
+            raise IngestError("Missing namespace. Use a company API key for file ingest.")
+        meta = dict(metadata or {})
+        meta.setdefault("namespace", ns)
+        docs = load_from_bytes(filename, data, metadata=meta)
         chunks = split_documents(docs)
         if not chunks:
             raise IngestError("No chunks produced from uploaded file")
@@ -106,17 +124,23 @@ class IngestService:
                 f"Too many chunks ({len(chunks)}). "
                 f"Max allowed per request is {settings.max_chunks_per_ingest}."
             )
+        for c in chunks:
+            c.metadata.setdefault("namespace", ns)
+            if meta.get("tenant_id"):
+                c.metadata["tenant_id"] = str(meta["tenant_id"])
+            if meta.get("tenant_slug"):
+                c.metadata["tenant_slug"] = str(meta["tenant_slug"])
 
         vectors = self.embedding_service.embed_texts([c.content for c in chunks])
         result = self.pinecone_client.upsert(
             chunks=chunks,
             vectors=vectors,
-            namespace=namespace,
+            namespace=ns,
         )
-        ns = result.get("namespace") or namespace or settings.pinecone_namespace
+        ns = str(result.get("namespace") or ns)
         from app.services.cache_service import cache_service
 
-        cache_service.bump_generation(str(ns))
+        cache_service.bump_generation(ns)
         return IngestResponse(
             status="ok",
             message=f"Ingested file {filename}",

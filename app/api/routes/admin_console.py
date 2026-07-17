@@ -651,7 +651,16 @@ async def upload_for_tenant(
         return {
             "status": "ok",
             "document": _doc_dict(doc),
-            "message": f"Document {doc.status}. Vectors in namespace {t.pinecone_namespace}.",
+            "message": (
+                f"Document {doc.status}. Isolated to company '{t.name}' "
+                f"(namespace={t.pinecone_namespace}, tenant_id={t.id[:8]}…)."
+            ),
+            "isolation": {
+                "tenant_id": t.id,
+                "tenant_slug": t.slug,
+                "pinecone_namespace": t.pinecone_namespace,
+                "rule": "Query must use this company's API key only",
+            },
         }
     except Exception as exc:  # noqa: BLE001
         raise _err(exc) from exc

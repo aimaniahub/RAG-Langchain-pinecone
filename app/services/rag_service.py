@@ -7,7 +7,7 @@ from collections.abc import Iterator
 from typing import Any
 
 from app.config import settings
-from app.core.exceptions import NotConfiguredError
+from app.core.exceptions import NotConfiguredError, QueryError
 from app.core.logging import get_logger
 from app.core.timing import StageTimer
 from app.models.schemas import QueryRequest, QueryResponse, SourceChunk
@@ -62,14 +62,22 @@ class RAGService:
         *,
         model_override: str | None = None,
         tenant_config: TenantRagConfig | None = None,
+        tenant_id: str | None = None,
     ) -> QueryResponse:
-        """Full path: cache → embed → retrieve → rerank → compress → LLM."""
+        """Full path: cache → embed → retrieve → rerank → compress → LLM.
+
+        tenant_id + namespace isolate companies. Never omit namespace for multi-tenant.
+        """
         cfg = tenant_config or TenantRagConfig()
         timer = StageTimer()
         timer.start("total")
 
         question = request.question.strip()
-        namespace = request.namespace or settings.pinecone_namespace or "default"
+        namespace = (request.namespace or "").strip()
+        if not namespace:
+            raise QueryError(
+                "Missing company namespace. Use a company API key (not the platform admin key)."
+            )
         retrieve_k = request.top_k or cfg.effective_top_k()
         return_n = cfg.effective_return_top_n()
         include_timings = (
@@ -87,11 +95,12 @@ class RAGService:
             raise NotConfiguredError("Pinecone")
 
         logger.info(
-            "query retrieve_k=%s return_n=%s model=%s ns=%s rerank=%s",
+            "query retrieve_k=%s return_n=%s model=%s ns=%s tenant=%s rerank=%s",
             retrieve_k,
             return_n,
             llm_model,
             namespace,
+            (tenant_id or "-")[:8],
             use_rerank,
         )
 
@@ -131,12 +140,13 @@ class RAGService:
         if embed_hit:
             cache_hit = "embed"
 
-        # ---- retrieve ----
+        # ---- retrieve (company namespace + tenant_id filter) ----
         with timer.measure("retrieve"):
             hits = self.pinecone_client.query(
                 vector=vector,
                 top_k=retrieve_k,
                 namespace=namespace,
+                tenant_id=tenant_id,
             )
         sources = hits_to_sources(hits)
 
@@ -238,13 +248,18 @@ class RAGService:
         *,
         model_override: str | None = None,
         tenant_config: TenantRagConfig | None = None,
+        tenant_id: str | None = None,
     ) -> Iterator[dict[str, Any]]:
         """Yield events: stage updates, tokens, final payload."""
         cfg = tenant_config or TenantRagConfig()
         timer = StageTimer()
         timer.start("total")
         question = request.question.strip()
-        namespace = request.namespace
+        namespace = (request.namespace or "").strip()
+        if not namespace:
+            raise QueryError(
+                "Missing company namespace. Use a company API key (not the platform admin key)."
+            )
         retrieve_k = request.top_k or cfg.effective_top_k()
         return_n = cfg.effective_return_top_n()
         llm_model = model_override or cfg.default_model or settings.openrouter_model
@@ -268,7 +283,10 @@ class RAGService:
         yield {"event": "stage", "stage": "retrieve", "status": "start"}
         with timer.measure("retrieve"):
             hits = self.pinecone_client.query(
-                vector=vector, top_k=retrieve_k, namespace=namespace
+                vector=vector,
+                top_k=retrieve_k,
+                namespace=namespace,
+                tenant_id=tenant_id,
             )
         sources = hits_to_sources(hits)
         yield {
