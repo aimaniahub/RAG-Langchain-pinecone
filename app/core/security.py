@@ -129,17 +129,25 @@ def _db_principal(db: Session, raw_key: str) -> Principal | None:
         tenant = db.get(Tenant, row.tenant_id)
         if not tenant or tenant.status != "active":
             return None
-        namespace = tenant.pinecone_namespace
+        namespace = (tenant.pinecone_namespace or "").strip()
+        if not namespace:
+            return None
         tenant_slug = tenant.slug
         model = tenant.default_model or settings.openrouter_model
         rate = tenant.rate_limit_rpm
 
     scopes = frozenset(s.strip() for s in (row.scopes or "").split(",") if s.strip())
     role = row.role if row.role in {"platform_admin", "tenant"} else "tenant"
+    # Tenant keys must be linked to a company (isolation hard rule)
+    if role != "platform_admin" and not row.tenant_id:
+        return None
     if role == "platform_admin":
         scopes = scopes | frozenset(
             {"platform:admin", "query:read", "ingest:write", "docs:read"}
         )
+        # Platform keys must not pretend to be a company silo
+        if not row.tenant_id:
+            namespace = settings.pinecone_namespace or "default"
 
     row.last_used_at = datetime.now(timezone.utc)
     try:

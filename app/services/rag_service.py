@@ -104,9 +104,11 @@ class RAGService:
             use_rerank,
         )
 
-        # ---- exact answer cache ----
+        # ---- exact answer cache (namespace + tenant_id) ----
         if use_answer_cache:
-            akey = cache_service.answer_key(question, namespace, retrieve_k)
+            akey = cache_service.answer_key(
+                question, namespace, retrieve_k, tenant_id=tenant_id
+            )
             cached = cache_service.answer_cache.get(akey)
             if cached is not None:
                 timer.stop("total")
@@ -221,7 +223,9 @@ class RAGService:
 
         if use_answer_cache:
             cache_service.answer_cache.set(
-                cache_service.answer_key(question, namespace, retrieve_k),
+                cache_service.answer_key(
+                    question, namespace, retrieve_k, tenant_id=tenant_id
+                ),
                 {
                     "status": "ok",
                     "answer": answer,

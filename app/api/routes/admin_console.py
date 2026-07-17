@@ -384,6 +384,7 @@ def get_tenant(
             "documents": [_doc_dict(d) for d in detail["documents"]],
             "members_count": len(detail["members"]),
             "query_count": detail["query_count"],
+            "isolation": detail.get("isolation"),
         }
     except Exception as exc:  # noqa: BLE001
         raise _err(exc) from exc
@@ -676,6 +677,31 @@ def reprocess(
     try:
         doc = DocumentService(db).process_document(document_id)
         return {"status": "ok", "document": _doc_dict(doc)}
+    except Exception as exc:  # noqa: BLE001
+        raise _err(exc) from exc
+
+
+@router.post("/admin/tenants/{tenant_id}/documents/reindex")
+def reindex_tenant_documents(
+    tenant_id: str,
+    principal: Principal = Depends(require_platform_admin()),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Re-embed all company documents into the correct isolated Pinecone namespace.
+
+    Use after mixed-namespace accidents (Core Tech vs QuizForge bleed).
+    """
+    _ = principal
+    try:
+        result = AdminService(db).reindex_tenant_documents(tenant_id)
+        return {
+            "status": "ok",
+            "message": (
+                f"Reindexed {result['reindexed']}/{result['total']} docs "
+                f"into namespace {result['namespace']}."
+            ),
+            **result,
+        }
     except Exception as exc:  # noqa: BLE001
         raise _err(exc) from exc
 

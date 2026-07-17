@@ -87,7 +87,7 @@ def create_app() -> FastAPI:
             "Client companies integrate with API keys. "
             "Operators manage tenants, keys, models, and documents in Admin."
         ),
-        version="1.1.0",
+        version="1.2.0",
         lifespan=lifespan,
         docs_url=settings.docs_url,
         redoc_url=settings.redoc_url,
@@ -166,29 +166,33 @@ def create_app() -> FastAPI:
         return {
             "service": settings.app_name,
             "product": "rag-api-platform",
-            "version": "1.1.0",
+            "version": "1.2.0",
             "mode": settings.product_mode,
             "message": (
-                "RAG API backend for client companies. "
-                "Integrate with X-API-Key. Operators use /admin."
+                "Multi-tenant RAG API. Each company has its own namespace, docs, keys, and RAG settings. "
+                "Clients must use X-API-Key from that company only."
             ),
             "docs": settings.docs_url or "disabled",
             "health": f"{prefix}/health",
             "ready": f"{prefix}/ready",
             "admin": "/admin" if settings.enable_admin_ui else None,
+            "isolation": {
+                "rule": "company_api_key → tenant → pinecone_namespace + tenant_id",
+                "never_use_admin_key_for_chat": True,
+            },
             "client_api": {
                 "query": f"POST {prefix}/query",
                 "ingest": f"POST {prefix}/ingest",
                 "ingest_file": f"POST {prefix}/ingest/file",
                 "documents": f"{prefix}/documents",
-                "auth": "X-API-Key: <tenant_api_key>",
+                "auth": "X-API-Key: <company_api_key>",
             },
             "admin_api": {
                 "setup": f"GET {prefix}/admin/setup",
                 "onboard": f"POST {prefix}/admin/onboard",
                 "tenants": f"{prefix}/admin/tenants",
+                "reindex": f"POST {prefix}/admin/tenants/{{id}}/documents/reindex",
                 "keys": f"{prefix}/admin/keys",
-                "users": f"{prefix}/admin/users",
                 "models": f"{prefix}/admin/models",
             },
         }

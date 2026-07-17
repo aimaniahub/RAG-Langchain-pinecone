@@ -115,13 +115,20 @@ class CacheService:
     def embed_key(self, question: str) -> str:
         return make_key("embed", settings.embedding_model, normalize_question(question))
 
-    def answer_key(self, question: str, namespace: str | None, top_k: int) -> str:
+    def answer_key(
+        self,
+        question: str,
+        namespace: str | None,
+        top_k: int,
+        tenant_id: str | None = None,
+    ) -> str:
         ns = namespace or settings.pinecone_namespace or "default"
         gen = str(self.generation(ns))
         return make_key(
             "answer",
             normalize_question(question),
             ns,
+            str(tenant_id or ""),
             str(top_k),
             settings.openrouter_model,
             gen,

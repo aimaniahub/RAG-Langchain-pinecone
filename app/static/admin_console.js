@@ -482,9 +482,18 @@
 
   function renderDeskOverview() {
     const t = state.desk.tenant;
+    const iso = state.desk.isolation || {};
     const issued = state.testKeys[t.id] || "";
     const el = $("tab-overview");
     el.innerHTML = `
+      <div class="banner" style="margin-bottom:12px">
+        <strong>Company isolation (hard silo)</strong>
+        <p class="muted" style="margin:6px 0 0">
+          Namespace <code class="mono">${esc(t.pinecone_namespace)}</code> ·
+          S3 <code class="mono">${esc(iso.s3_prefix || "companies/" + t.slug + "/documents/")}</code><br/>
+          Chat apps must use <strong>this company’s API key only</strong>. Never share keys across Core Tech / QuizForge / others.
+        </p>
+      </div>
       <div class="stat-grid">
         <div class="stat"><div class="lbl">Status</div><div class="val" style="font-size:1rem">${esc(t.status)}</div></div>
         <div class="stat"><div class="lbl">Keys</div><div class="val">${state.desk.keys?.length || 0}</div></div>
@@ -502,6 +511,9 @@
         </button>
         <button type="button" class="btn" id="btnDeskSettings">RAG settings</button>
         <button type="button" class="btn" id="btnDeskTest">Open Test API</button>
+        <button type="button" class="btn" id="btnReindex">
+          <span class="btn-label">Reindex all docs</span>
+        </button>
       </div>
       ${integrationHtml(t, issued)}
     `;
@@ -543,6 +555,33 @@
       document.querySelector('.nav-item[data-view="test"]').click();
       $("testCompany").value = t.id;
       updateTestMeta();
+    };
+    $("btnReindex").onclick = async () => {
+      const ok = await confirmAction(
+        "Reindex all documents?",
+        `Re-embeds every file for ${t.name} into namespace ${t.pinecone_namespace}. Use this to fix mixed Core Tech / QuizForge answers.`,
+        "Reindex"
+      );
+      if (!ok) return;
+      const btn = $("btnReindex");
+      setBtnLoading(btn, true, "Reindexing…");
+      try {
+        const d = await req(`/admin/tenants/${t.id}/documents/reindex`, {
+          method: "POST",
+          headers: headers(false),
+        });
+        const failN = (d.failed || []).length;
+        await notifySuccess(
+          "Reindex complete",
+          `${d.message || ""}${failN ? `\nFailed: ${failN}` : ""}`
+        );
+        await openDesk(t.id);
+        refresh();
+      } catch (e) {
+        await notifyError("Reindex failed", e.message);
+      } finally {
+        setBtnLoading(btn, false);
+      }
     };
   }
 
@@ -870,11 +909,19 @@
     const docs = state.desk.documents || [];
     const el = $("tab-docs");
     el.innerHTML = `
+      <div class="banner" style="margin-bottom:12px">
+        <strong>Docs for this company only</strong>
+        <p class="muted" style="margin:6px 0 0">
+          Vectors go to namespace <code class="mono">${esc(t.pinecone_namespace || "")}</code>.
+          Do not upload another company's files here.
+        </p>
+      </div>
       <div class="form-row">
         <label class="field grow"><span>Upload PDF / MD / TXT</span>
           <input type="file" id="deskFile" accept=".pdf,.md,.txt,.markdown" />
         </label>
         <button type="button" class="btn primary" id="deskUpload"><span class="btn-label">Upload &amp; embed</span></button>
+        <button type="button" class="btn" id="deskReindex"><span class="btn-label">Reindex all</span></button>
       </div>
       <div class="table-wrap" style="margin-top:12px">
         <table>
@@ -921,9 +968,12 @@
         });
         const d = await r.json();
         if (!r.ok) throw new Error(formatError(d.detail || d.message, "upload failed"));
+        const iso = d.isolation
+          ? `\nNamespace: ${d.isolation.pinecone_namespace}`
+          : "";
         await notifySuccess(
           "Document uploaded",
-          `${d.document?.filename || f.name} — status: ${d.document?.status || "uploaded"}.`
+          `${d.document?.filename || f.name} — status: ${d.document?.status || "uploaded"}.${iso}`
         );
         await openDesk(t.id);
         refresh();
@@ -931,6 +981,28 @@
         await notifyError("Upload failed", e.message);
       } finally {
         pushBusy(-1);
+        setBtnLoading(btn, false);
+      }
+    };
+    $("deskReindex").onclick = async () => {
+      const ok = await confirmAction(
+        "Reindex all documents?",
+        `All files for ${t.name} will be re-embedded into ${t.pinecone_namespace}.`,
+        "Reindex"
+      );
+      if (!ok) return;
+      const btn = $("deskReindex");
+      setBtnLoading(btn, true, "Reindexing…");
+      try {
+        const d = await req(`/admin/tenants/${t.id}/documents/reindex`, {
+          method: "POST",
+          headers: headers(false),
+        });
+        await notifySuccess("Reindex complete", d.message || "Done");
+        await openDesk(t.id);
+      } catch (e) {
+        await notifyError("Reindex failed", e.message);
+      } finally {
         setBtnLoading(btn, false);
       }
     };

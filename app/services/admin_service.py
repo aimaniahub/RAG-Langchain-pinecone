@@ -332,7 +332,15 @@ class AdminService:
         while self.db.query(Tenant).filter(Tenant.slug == slug_final).first():
             slug_final = f"{base}-{i}"
             i += 1
-        ns = slug_final.replace("-", "_")[:64]
+        # Unique Pinecone namespace — never "default"; never shared across companies
+        ns_base = ("co_" + slug_final.replace("-", "_"))[:60]
+        ns = ns_base
+        j = 1
+        while self.db.query(Tenant).filter(Tenant.pinecone_namespace == ns).first():
+            ns = f"{ns_base}_{j}"[:64]
+            j += 1
+        if ns in {"default", "platform", ""}:
+            ns = f"co_{secrets.token_hex(4)}"
         t = Tenant(
             name=name,
             slug=slug_final,
@@ -458,6 +466,46 @@ class AdminService:
             "documents": docs,
             "members": members,
             "query_count": int(qcount),
+            "isolation": {
+                "tenant_id": t.id,
+                "slug": t.slug,
+                "pinecone_namespace": t.pinecone_namespace,
+                "s3_prefix": f"companies/{t.slug}/documents/",
+                "rule": "Only this company's API key may query these vectors",
+            },
+        }
+
+    def reindex_tenant_documents(self, tenant_id: str) -> dict:
+        """Re-embed all company docs into the correct Pinecone namespace (isolation repair)."""
+        from app.services.document_service import DocumentService
+
+        t = self.get_tenant(tenant_id)
+        if not t:
+            raise AppError("Tenant not found")
+        docs = (
+            self.db.query(Document)
+            .filter(Document.tenant_id == tenant_id)
+            .order_by(Document.created_at.asc())
+            .all()
+        )
+        svc = DocumentService(self.db)
+        ok, failed = [], []
+        for d in docs:
+            # force namespace sync
+            d.namespace = t.pinecone_namespace
+            self.db.commit()
+            try:
+                svc.process_document(d.id)
+                ok.append(d.id)
+            except Exception as exc:  # noqa: BLE001
+                failed.append({"id": d.id, "filename": d.filename, "error": str(exc)[:200]})
+        return {
+            "tenant_id": tenant_id,
+            "namespace": t.pinecone_namespace,
+            "total": len(docs),
+            "reindexed": len(ok),
+            "failed": failed,
+            "ok_ids": ok,
         }
 
     # ─── Keys ───────────────────────────────────────────────────────

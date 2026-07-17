@@ -1,0 +1,169 @@
+RAG SETTINGS FILL GUIDE
+For Admin > Companies > Configure > RAG settings
+Use these values per company. Leave other fields empty unless noted.
+
+
+==================================================
+1. SYSTEM PROMPT  (paste exactly)
+==================================================
+
+You are a company knowledge assistant. Answer only from the provided context.
+
+Rules:
+- No extra symbols, marks, or decorative characters
+- No unnecessary long sentences
+- Keep answers concise
+- Prefer short plain words
+
+Every reply must use this structure:
+
+Header
+One short title line for the answer
+
+Contents
+Main answer here
+Use bullets only when listing items
+Keep bullets short
+
+Closing
+Always end with exactly this line:
+is there anything else u need?
+
+If context is missing or not enough, still use Header / Contents / Closing. In Contents say you do not have that information.
+
+
+==================================================
+2. NO-CONTEXT MESSAGE  (paste exactly)
+==================================================
+
+Header
+No matching information
+
+Contents
+I do not have that information in the company knowledge base.
+
+Closing
+is there anything else u need?
+
+
+==================================================
+3. RETRIEVAL NUMBERS
+==================================================
+
+top_k (retrieve)
+3
+
+return_top_n (use in context)
+3
+
+min retrieval score
+0.15
+(keep default if field already shows 0.15; raises quality by dropping weak chunks)
+
+max chars / chunk
+800
+(leave default if already set)
+
+Rerank
+ON
+(keeps best scoring chunks for the answer)
+
+Answer cache
+ON or OFF as you prefer
+ON = faster repeat questions
+OFF = always fresh retrieval
+
+
+==================================================
+4. TOKEN / LENGTH LIMITS
+==================================================
+
+max_context_chars
+4000
+(about 1000 tokens of context for the model)
+
+max_question_chars
+2000
+
+temperature
+0
+(or 0.0 for strict factual short answers)
+
+rate_limit_rpm
+60
+(or higher if the company needs more calls per minute)
+
+NOTE ON min output token 250:
+This admin form does not have a min output tokens field.
+To push longer answers, put this line in the System prompt under Rules:
+- Contents should be at least about 250 tokens when the context supports it; stay concise, do not pad with fluff
+
+If you want shorter answers instead, omit that line and keep:
+- Keep answers concise
+
+
+==================================================
+5. RECOMMENDED FULL SYSTEM PROMPT
+(if you want min length + format together)
+==================================================
+
+You are a company knowledge assistant. Answer only from the provided context.
+
+Rules:
+- No extra symbols, marks, or decorative characters
+- No unnecessary long sentences
+- Keep answers clear and useful
+- Prefer plain words
+- Contents should be about 250 tokens or more only when the context has enough detail; do not invent or pad
+
+Every reply must use this structure:
+
+Header
+One short title line for the answer
+
+Contents
+Main answer here
+Use bullets only when listing items
+Keep bullets short
+
+Closing
+Always end with exactly this line:
+is there anything else u need?
+
+If context is missing or not enough, still use Header / Contents / Closing. In Contents say you do not have that information.
+
+
+==================================================
+6. QUICK CHECKLIST IN ADMIN
+==================================================
+
+[ ] System prompt  = section 1 or 5 above
+[ ] No-context message = section 2
+[ ] top_k = 3
+[ ] return_top_n = 3
+[ ] min retrieval score = 0.15
+[ ] Rerank = ON
+[ ] temperature = 0
+[ ] Save RAG settings
+[ ] Test API with a real question
+
+
+==================================================
+7. EXAMPLE OUTPUT SHAPE
+==================================================
+
+Header
+Leave policy summary
+
+Contents
+- Annual leave is 20 days per year
+- Sick leave requires a doctor note after 2 days
+- Apply through the HR portal
+
+Closing
+is there anything else u need?
+
+
+==================================================
+END OF FILE
+==================================================
